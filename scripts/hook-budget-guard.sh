@@ -141,6 +141,37 @@ BUDGET_SESSION_WARN_TOKENS="${BUDGET_SESSION_WARN_TOKENS:-10000000}"
 
 # Sum cache_read + cache_creation + input + output over a transcript.
 #
+# Takes a mode: "live" counts only entries after the last compaction boundary
+# (the spend the session is still carrying); "lifetime" counts the whole file.
+#
+# WHY COMPACTION RESETS THE LIVE COUNT.
+# Compaction rewrites the context in place -- same session, same transcript
+# file -- and the pre-compaction `usage` entries stay on disk forever. Summing
+# them unconditionally bills the session for context it no longer has, so the
+# guard tightens as the operator does the exact thing that relieves the
+# pressure. Measured on a real auto-compacted session (huddle-transcribe,
+# 2026-09-08, 167,127 -> 11,604 tokens): the whole-file sum reads 18.5M and
+# trips the 10M soft-warn, while the post-boundary sum is 5.4M. 13.1M of the
+# reported spend was context that had already been dropped.
+#
+# Both triggers reset. `trigger` is "manual" (/compact) or "auto", and auto is
+# the one that matters most here -- the harness compacts on its own, so a
+# lifetime-only count penalises the operator for a decision they never made.
+# The justification is the same either way: this guard's own model is that
+# cost is (turns x context size), and after a boundary the context genuinely
+# is smaller, whoever shrank it.
+#
+# LIFETIME IS STILL COMPUTED, but only to REPORT, never to trigger. Both
+# thresholds gate on live spend; when lifetime differs it is appended to the
+# message so the full cost of a long session is never hidden. Warning on
+# lifetime was tried first and rejected on measurement -- see the note above
+# the soft-warn branch.
+#
+# Only `subtype` is read from the boundary. compactMetadata carries trigger,
+# preTokens, postTokens and cumulativeDroppedTokens, but none of them are
+# needed to locate the split, and depending on their shape would couple this
+# guard to a payload that has already changed once.
+#
 # WHY DEDUP BY requestId: the transcript stores a retried or streamed request
 # under the same requestId more than once (in 91ef0da0, 65 entries appeared
 # twice and 17 three times). Summing raw lines therefore overcounts spend by
@@ -153,15 +184,24 @@ BUDGET_SESSION_WARN_TOKENS="${BUDGET_SESSION_WARN_TOKENS:-10000000}"
 # `? // empty` swallows malformed lines -- the transcript is written live and
 # is NOT guaranteed flushed at hook time, so a truncated final line is
 # expected, not exceptional.
+#
+# Dedup runs AFTER the boundary split, so a requestId that appears on both
+# sides of a compaction still counts once within the live window.
 _sum_tokens() {
-  local path="$1"
+  local path="$1" mode="${2:-live}"
   [[ -r "${path}" ]] || {
     printf '0\n'
     return 0
   }
-  jq -nr '
-    [ inputs? // empty
-      | select(type == "object")
+  jq -nr --arg mode "${mode}" '
+    [ inputs? // empty | select(type == "object") ] as $all
+    | ( if $mode == "lifetime" then 0
+        else ( [ $all | to_entries[]
+                 | select(.value.type? == "system")
+                 | select(.value.subtype? == "compact_boundary")
+                 | .key ] | last // -1 ) + 1
+        end ) as $from
+    | [ $all[$from:][]
       | select(.message? | type == "object")
       | select(.message.usage? | type == "object")
       | { k: ((.requestId // .message.id // .uuid) | tostring)
@@ -229,9 +269,20 @@ case "${event}" in
     transcript=$(printf '%s\n' "${input}" | jq -r '.transcript_path // empty' 2>/dev/null) || transcript=""
     [[ -n "${transcript}" ]] || exit 0
 
-    spent=$(_sum_tokens "${transcript}")
+    # Two numbers, two jobs. `spent` is post-compaction spend and gates the
+    # hard block; `lifetime` is the whole file and drives the soft warn, so a
+    # repeatedly-compacted session still surfaces instead of running silent.
+    spent=$(_sum_tokens "${transcript}" live)
+    lifetime=$(_sum_tokens "${transcript}" lifetime)
     _spent_h=$(_fmt_m "${spent}")
+    _life_h=$(_fmt_m "${lifetime}")
     _ceil_h=$(_fmt_m "${BUDGET_SESSION_TOKENS}")
+
+    # Only worth mentioning when compaction actually moved the number.
+    _compact_note=""
+    if [[ "${lifetime}" -gt "${spent}" ]]; then
+      _compact_note=" since last compaction; ${_life_h} lifetime"
+    fi
 
     # NOTE ON SCOPE: this counts the MAIN thread only. Subagent spend lives
     # in separate transcripts under <session>/subagents/ and is caught by the
@@ -243,16 +294,17 @@ case "${event}" in
     if [[ "${spent}" -gt "${BUDGET_SESSION_TOKENS}" ]]; then
       {
         printf '🛑 SESSION BUDGET EXCEEDED\n\n'
-        printf 'Main thread has spent %s tokens (ceiling %s).\n\n' \
-          "${_spent_h}" "${_ceil_h}"
+        printf 'Main thread has spent %s tokens%s (ceiling %s).\n\n' \
+          "${_spent_h}" "${_compact_note}" "${_ceil_h}"
         printf 'At this context size each further turn costs real money before\n'
         printf 'it does any work. Continuing is the expense.\n\n'
         printf 'Do NOT keep working. In your next message:\n'
         printf '  1. State what is DONE and verified, and what is NOT.\n'
         printf '  2. State the spend and hand the user the decision.\n'
-        printf '  3. If work remains, propose resuming in a FRESH session --\n'
-        printf '     a new session drops the accumulated context that is\n'
-        printf '     making every turn expensive.\n\n'
+        printf '  3. If work remains, propose /compact or a FRESH session --\n'
+        printf '     both drop the accumulated context that is making every\n'
+        printf '     turn expensive, and this ceiling counts only what has\n'
+        printf '     been spent since the last compaction.\n\n'
         printf 'Raise for this session only if the user asks:\n'
         printf '  BUDGET_SESSION_TOKENS=%s\n' "$((BUDGET_SESSION_TOKENS * 2))"
       } >&2
@@ -264,8 +316,27 @@ case "${event}" in
     # to the user) rather than stderr, because there is no decision for the
     # model to make here yet -- blocking on a warning is how a guard becomes
     # the thing burning the tokens.
+    #
+    # WARN ON LIVE SPEND, NOT LIFETIME -- measured, not assumed.
+    #
+    # The first draft of this fix warned on lifetime, reasoning that a session
+    # which has compacted through 40M should still be visible. Checked against
+    # all 19 compacted transcripts on this machine: 16 of them exceed the 10M
+    # warn on lifetime while only 1 exceeds it on live spend. Two sit above
+    # the 25M HARD ceiling on lifetime (25.6M and 24.3M) while actually
+    # carrying 8.4M and 8.0M.
+    #
+    # A warning that fires on essentially every session that has ever
+    # compacted is not a signal, it is the nagging this fix exists to remove,
+    # and it trains the operator to raise BUDGET_SESSION_WARN_TOKENS until the
+    # warn is dead for real runaways too. Lifetime stays in the message when
+    # it differs, so the number is never hidden -- it just does not trigger.
     if [[ "${spent}" -gt "${BUDGET_SESSION_WARN_TOKENS}" ]]; then
-      _warn_msg="💸 Session spend: ${_spent_h} tokens (hard stop at ${_ceil_h})."
+      if [[ -n "${_compact_note}" ]]; then
+        _warn_msg="💸 Session spend: ${_life_h} tokens lifetime, ${_spent_h} since last compaction (hard stop at ${_ceil_h})."
+      else
+        _warn_msg="💸 Session spend: ${_spent_h} tokens (hard stop at ${_ceil_h})."
+      fi
       jq -nc --arg m "${_warn_msg}" '{systemMessage: $m}'
     fi
     exit 0
