@@ -204,7 +204,7 @@ before merge.
 
 If `gh pr merge` fails: report the failure, ask the human to merge manually. Never use REST API, GraphQL, or workarounds. These are blocked by hooks. Enforcement details: `~/.claude/docs/INFRASTRUCTURE.md`
 
-**Off-org PRs are force-created as drafts — this is expected, not an error.** `gh pr create` targeting a repo whose owner is not `smartwatermelon` or `nightowlstudiollc` is hard-forced to `--draft` by `gh-wrapper.sh`, mechanically — no opt-out, no env var escape hatch (`smartwatermelon/dotfiles#174`/`#175`). If a PR you just opened comes back as a draft and you didn't ask for that, this is why. Do not treat it as a bug and do not attempt to work around it in any way. Surface the draft PR to the user as usual (repo, number, URL, one line on what it addresses) and note it's a draft pending the human's discretion — only the human promotes it out of draft, via the GitHub UI.
+**Off-org PRs are force-created as drafts — this is expected, not an error.** `gh pr create` targeting a repo whose owner is not `smartwatermelon`, `nightowlstudiollc`, or `twistedmelonman` is hard-forced to `--draft` by `gh-wrapper.sh`, mechanically — no opt-out, no env var escape hatch (`smartwatermelon/dotfiles#174`/`#175`). (`twistedmelonman` is the personal account after the 2026-09 org migration; `smartwatermelon` is now the org.) If a PR you just opened comes back as a draft and you didn't ask for that, this is why. Do not treat it as a bug and do not attempt to work around it in any way. Surface the draft PR to the user as usual (repo, number, URL, one line on what it addresses) and note it's a draft pending the human's discretion — only the human promotes it out of draft, via the GitHub UI.
 
 **Post-merge cleanup:** After a successful merge, leave the workspace clean on main:
 
@@ -268,7 +268,7 @@ Before declaring work done, output the full Completion Verification template fro
 
 - **Never `git add .`** — Add files individually
 - **Never `--no-verify`** — Blocked by hooks; human must commit manually in emergencies
-- **Repo visibility defaults by org, not a blanket rule**: `smartwatermelon` hierarchy defaults to **public** unless there's an actual privacy or security reason to keep something private (GitHub imposes real collaborator/Actions-minute limits on private repos that make defaulting private counterproductive there). `nightowlstudiollc` is commercial software and defaults to **private**, except website/client work, which is public by standard practice. If genuinely unsure which default applies to a specific repo (e.g., it touches credentials or unreleased commercial work), ask rather than assume either default.
+- **Repo visibility defaults by org, not a blanket rule**: the `smartwatermelon` org and the `twistedmelonman` personal account both default to **public** unless there's an actual privacy or security reason to keep something private (GitHub imposes real collaborator/Actions-minute limits on private repos that make defaulting private counterproductive there). `nightowlstudiollc` is commercial software and defaults to **private**, except website/client work, which is public by standard practice. If genuinely unsure which default applies to a specific repo (e.g., it touches credentials or unreleased commercial work), ask rather than assume either default.
 - Prefer `git mv` / `git rm` over bare `mv` / `rm`
 - Never commit code that doesn't compile
 - Remote origin uses SSH (`git@github.com:...`) — HTTPS will fail with auth errors
