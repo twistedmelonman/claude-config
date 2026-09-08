@@ -194,5 +194,6 @@
   "inputNeededNotifEnabled": true,
   "agentPushNotifEnabled": true,
   "useAutoModeDuringPlan": false,
-  "gitAttribution": true
+  "gitAttribution": true,
+  "advisorModel": "fable"
 }
