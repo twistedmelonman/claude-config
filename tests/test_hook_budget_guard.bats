@@ -290,6 +290,173 @@ _subagent_input() {
   [ "${status}" -eq 0 ]
 }
 
+# --- Compaction resets the live count ---------------------------------------
+#
+# Compaction rewrites the context in place -- same session, same transcript --
+# and leaves every pre-compaction `usage` entry on disk. A guard that sums the
+# whole file therefore bills the session for context it no longer holds, and
+# tightens as the operator does the one thing that relieves the pressure.
+# Auto-compaction makes it worse: the harness compacts on its own, so the
+# penalty lands without the operator choosing anything.
+
+_boundary() {
+  jq -nc --arg t "${1:-auto}" \
+    '{type:"system", subtype:"compact_boundary",
+      compactMetadata:{trigger:$t, preTokens:167127, postTokens:11604}}'
+}
+
+@test "compaction: spend before the boundary does not count toward the block" {
+  # 10 x 1000 before, 2 x 1000 after. Live spend is 2,000, lifetime 12,000.
+  # Against a 9,000 ceiling the pre-compaction guard blocks; this must allow.
+  _write_transcript "${TMPD}/pre.jsonl" 10 1000
+  _boundary >>"${TMPD}/pre.jsonl"
+  jq -nc '{requestId:"post-1", message:{usage:{cache_read_input_tokens:1000}}}' >>"${TMPD}/pre.jsonl"
+  jq -nc '{requestId:"post-2", message:{usage:{cache_read_input_tokens:1000}}}' >>"${TMPD}/pre.jsonl"
+  run env BUDGET_SESSION_TOKENS=9000 BUDGET_SESSION_WARN_TOKENS=99999999 \
+    bash -c "\"${HOOK}\" <<<'$(_stop_input "${TMPD}/pre.jsonl")'"
+  [ "${status}" -eq 0 ]
+}
+
+@test "compaction: spend AFTER the boundary still blocks (guard is not dead)" {
+  # Pins the other side of the reset. Without this, a bug that returned 0 for
+  # every compacted transcript would pass the test above for the wrong reason.
+  _write_transcript "${TMPD}/post.jsonl" 2 1000
+  _boundary >>"${TMPD}/post.jsonl"
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    jq -nc --arg r "after-${i}" \
+      '{requestId:$r, message:{usage:{cache_read_input_tokens:1000}}}' >>"${TMPD}/post.jsonl"
+  done
+  run env BUDGET_SESSION_TOKENS=9000 BUDGET_SESSION_WARN_TOKENS=99999999 \
+    bash -c "\"${HOOK}\" <<<'$(_stop_input "${TMPD}/post.jsonl")'"
+  [ "${status}" -eq 2 ]
+}
+
+@test "compaction: only the LAST boundary counts when a session compacts twice" {
+  _write_transcript "${TMPD}/two.jsonl" 10 1000
+  _boundary >>"${TMPD}/two.jsonl"
+  local i
+  for i in 1 2 3 4 5; do
+    jq -nc --arg r "mid-${i}" \
+      '{requestId:$r, message:{usage:{cache_read_input_tokens:1000}}}' >>"${TMPD}/two.jsonl"
+  done
+  _boundary >>"${TMPD}/two.jsonl"
+  jq -nc '{requestId:"last", message:{usage:{cache_read_input_tokens:1000}}}' >>"${TMPD}/two.jsonl"
+  # Live spend is 1,000 -- only what follows the second boundary.
+  run env BUDGET_SESSION_TOKENS=1500 BUDGET_SESSION_WARN_TOKENS=99999999 \
+    bash -c "\"${HOOK}\" <<<'$(_stop_input "${TMPD}/two.jsonl")'"
+  [ "${status}" -eq 0 ]
+}
+
+@test "compaction: a manual /compact resets exactly as an auto one does" {
+  # trigger is "manual" or "auto"; the guard reads only the subtype. If it
+  # ever starts filtering on trigger, this fails.
+  _write_transcript "${TMPD}/man.jsonl" 10 1000
+  _boundary manual >>"${TMPD}/man.jsonl"
+  jq -nc '{requestId:"p1", message:{usage:{cache_read_input_tokens:1000}}}' >>"${TMPD}/man.jsonl"
+  run env BUDGET_SESSION_TOKENS=9000 BUDGET_SESSION_WARN_TOKENS=99999999 \
+    bash -c "\"${HOOK}\" <<<'$(_stop_input "${TMPD}/man.jsonl")'"
+  [ "${status}" -eq 0 ]
+}
+
+@test "compaction: an uncompacted transcript is unaffected by the split" {
+  # The no-boundary path must behave exactly as before, or this fix would
+  # have silently changed every session that never compacts.
+  _write_transcript "${TMPD}/none.jsonl" 10 1000
+  run env BUDGET_SESSION_TOKENS=9000 BUDGET_SESSION_WARN_TOKENS=99999999 \
+    bash -c "\"${HOOK}\" <<<'$(_stop_input "${TMPD}/none.jsonl")'"
+  [ "${status}" -eq 2 ]
+}
+
+@test "compaction: dedup survives the boundary split" {
+  # A requestId repeated on both sides of a boundary must count once within
+  # the live window -- dedup runs after the split, not before it.
+  _boundary >"${TMPD}/dedup.jsonl"
+  local i
+  for i in 1 2 3; do
+    jq -nc --arg u "u${i}" \
+      '{requestId:"req-DUP", uuid:$u, message:{usage:{cache_read_input_tokens:1000}}}' \
+      >>"${TMPD}/dedup.jsonl"
+  done
+  run env BUDGET_SESSION_TOKENS=1500 BUDGET_SESSION_WARN_TOKENS=99999999 \
+    bash -c "\"${HOOK}\" <<<'$(_stop_input "${TMPD}/dedup.jsonl")'"
+  [ "${status}" -eq 0 ]
+}
+
+@test "compaction: the warn fires on live spend, not lifetime" {
+  # Measured rationale: of the 19 compacted transcripts on the dev machine, 16
+  # exceed the 10M warn on lifetime but only 1 does on live spend. Warning on
+  # lifetime would fire on nearly every session that has ever compacted, which
+  # is the nagging this change exists to remove.
+  _write_transcript "${TMPD}/warn.jsonl" 20 1000 # 20,000 lifetime
+  _boundary >>"${TMPD}/warn.jsonl"
+  jq -nc '{requestId:"w1", message:{usage:{cache_read_input_tokens:1000}}}' >>"${TMPD}/warn.jsonl"
+  run env BUDGET_SESSION_TOKENS=99999999 BUDGET_SESSION_WARN_TOKENS=5000 \
+    bash -c "\"${HOOK}\" <<<'$(_stop_input "${TMPD}/warn.jsonl")'"
+  [ "${status}" -eq 0 ]
+  [ -z "${output}" ]
+}
+
+@test "compaction: lifetime spend is still reported when it differs" {
+  # The reset must not HIDE the number, only stop it from triggering.
+  _write_transcript "${TMPD}/rep.jsonl" 20 1000
+  _boundary >>"${TMPD}/rep.jsonl"
+  local i
+  for i in 1 2 3 4 5 6; do
+    jq -nc --arg r "r${i}" \
+      '{requestId:$r, message:{usage:{cache_read_input_tokens:1000}}}' >>"${TMPD}/rep.jsonl"
+  done
+  run env BUDGET_SESSION_TOKENS=99999999 BUDGET_SESSION_WARN_TOKENS=5000 \
+    bash -c "\"${HOOK}\" <<<'$(_stop_input "${TMPD}/rep.jsonl")'"
+  [[ "${output}" == *'lifetime'* ]]
+  [[ "${output}" == *'since last compaction'* ]]
+}
+
+@test "compaction: SubagentStop is unaffected (subagents do not compact)" {
+  _write_transcript "${TMPD}/ag.jsonl" 10 1000
+  run env BUDGET_SUBAGENT_TOKENS=9000 \
+    bash -c "\"${HOOK}\" <<<'$(_subagent_input "${TMPD}/ag.jsonl")'"
+  [ "${status}" -eq 2 ]
+}
+
+# --- Replay of the real auto-compacted session ------------------------------
+#
+# Same rationale as the incident fixtures below: the claim "this fix turns
+# 18.5M into 5.4M" was verified against a real transcript that exists on one
+# machine and cannot be committed. tests/fixtures/compaction/ holds a
+# sanitized replay -- usage numbers and the boundary shape only, every content
+# field stripped -- reproducing huddle-transcribe 639e5534 (2026-09-08,
+# trigger auto, 167,127 -> 11,604 tokens).
+#
+# Verified before the fix was written: the unmodified guard reported 18.5M on
+# this fixture and emitted the soft warn, matching the real transcript exactly.
+
+COMPACT_FIXTURE="${BATS_TEST_DIRNAME}/fixtures/compaction/session-auto-compacted.jsonl"
+
+@test "compaction replay: the real session drops from 18.5M to 5.4M" {
+  # Ceiling between the two figures: the old whole-file count blocks here, the
+  # post-boundary count does not. This is the bug, pinned against real data.
+  run env BUDGET_SESSION_TOKENS=10000000 BUDGET_SESSION_WARN_TOKENS=99999999 \
+    bash -c "\"${HOOK}\" <<<'$(_stop_input "${COMPACT_FIXTURE}")'"
+  [ "${status}" -eq 0 ]
+}
+
+@test "compaction replay: the real session no longer trips the 10M soft warn" {
+  # At the shipped defaults this session warned on every turn while actually
+  # carrying 5.4M of a 25M budget.
+  run bash -c "\"${HOOK}\" <<<'$(_stop_input "${COMPACT_FIXTURE}")'"
+  [ "${status}" -eq 0 ]
+  [ -z "${output}" ]
+}
+
+@test "compaction replay: the fixture still blocks below its live spend" {
+  # Guards against a fixture that reads as 0 and passes the two tests above
+  # for the wrong reason. 5.4M live must exceed a 5M ceiling.
+  run env BUDGET_SESSION_TOKENS=5000000 BUDGET_SESSION_WARN_TOKENS=99999999 \
+    bash -c "\"${HOOK}\" <<<'$(_stop_input "${COMPACT_FIXTURE}")'"
+  [ "${status}" -eq 2 ]
+}
+
 # --- Regression pin against the real incident -------------------------------
 
 @test "incident 91ef0da0: default subagent ceiling would have caught the 19.2M agent" {
