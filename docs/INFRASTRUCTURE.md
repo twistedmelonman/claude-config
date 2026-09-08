@@ -74,9 +74,11 @@ This enforcement exists because of two incidents on 2026-02-24:
 
 ## Off-Org Draft-PR Enforcement (gh-wrapper.sh)
 
-`gh pr create` targeting a repo whose owner is not `smartwatermelon` or `nightowlstudiollc` is force-created as a draft by `~/.config/bash/gh-wrapper.sh` (symlinked as `~/.local/bin/gh`, and sourced as a bash function via `functions.sh`). This is a mechanical check on the resolved repo owner — not an AI judgement call, and there is no flag or environment variable to opt out. Owner is resolved the same way identity auto-switch resolves it: an explicit `-R`/`--repo` target takes precedence over cwd's `origin` remote.
+`gh pr create` targeting a repo whose owner is not `smartwatermelon`, `nightowlstudiollc`, or `twistedmelonman` is force-created as a draft by `~/.config/bash/gh-wrapper.sh` (symlinked as `~/.local/bin/gh`, and sourced as a bash function via `functions.sh`). This is a mechanical check on the resolved repo owner — not an AI judgement call, and there is no flag or environment variable to opt out. Owner is resolved the same way identity auto-switch resolves it: an explicit `-R`/`--repo` target takes precedence over cwd's `origin` remote.
 
-**Why**: an automated agent should not be able to open a fully "submitted" PR against a repo outside the two orgs this environment is scoped to. The human operator remains free to promote the PR out of draft afterward, at their discretion, via the GitHub UI — the wrapper only governs creation time, not later state. See `smartwatermelon/dotfiles#174` (design) and `#175` (implementation).
+`twistedmelonman` is the personal account after the 2026-09 org migration (the old personal login `smartwatermelon` was freed up and re-created as the org). All three are in-org for this check; the authoritative list is the `case` in `gh-wrapper.sh`'s draft-forcing block.
+
+**Why**: an automated agent should not be able to open a fully "submitted" PR against a repo outside the orgs this environment is scoped to. The human operator remains free to promote the PR out of draft afterward, at their discretion, via the GitHub UI — the wrapper only governs creation time, not later state. See `smartwatermelon/dotfiles#174` (design) and `#175` (implementation).
 
 **If an agent hits this**: a draft PR on an off-org repo is expected behavior, not a bug. Do not attempt to work around it in any way. Surface it to the user as a draft PR and stop there.
 
