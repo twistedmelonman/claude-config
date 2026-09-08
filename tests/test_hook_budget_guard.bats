@@ -412,6 +412,28 @@ _boundary() {
   [[ "${output}" == *'since last compaction'* ]]
 }
 
+@test "compaction: the boundary entry itself is excluded from the live window" {
+  # Off-by-one pin on the load-bearing index arithmetic. The replay fixture
+  # would survive a one-entry error, so this poisons the boundary entry with a
+  # usage payload it must never contribute: live spend has to read exactly
+  # 1,000, not 8,777. Real boundaries carry no usage object, hence the
+  # synthetic one here.
+  {
+    jq -nc '{requestId:"before", message:{usage:{cache_read_input_tokens:5000}}}'
+    jq -nc '{type:"system", subtype:"compact_boundary",
+             message:{usage:{cache_read_input_tokens:7777}}}'
+    jq -nc '{requestId:"after", message:{usage:{cache_read_input_tokens:1000}}}'
+  } >"${TMPD}/ob.jsonl"
+  run env BUDGET_SESSION_TOKENS=1500 BUDGET_SESSION_WARN_TOKENS=99999999 \
+    bash -c "\"${HOOK}\" <<<'$(_stop_input "${TMPD}/ob.jsonl")'"
+  [ "${status}" -eq 0 ]
+
+  # And the other side: 1,000 must still be counted, not silently zeroed.
+  run env BUDGET_SESSION_TOKENS=900 BUDGET_SESSION_WARN_TOKENS=99999999 \
+    bash -c "\"${HOOK}\" <<<'$(_stop_input "${TMPD}/ob.jsonl")'"
+  [ "${status}" -eq 2 ]
+}
+
 @test "compaction: SubagentStop is unaffected (subagents do not compact)" {
   _write_transcript "${TMPD}/ag.jsonl" 10 1000
   run env BUDGET_SUBAGENT_TOKENS=9000 \
