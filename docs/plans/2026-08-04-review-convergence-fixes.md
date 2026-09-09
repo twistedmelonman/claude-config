@@ -33,11 +33,13 @@
 ## Task 1: File-header context injection (Fix 1)
 
 **Files:**
+
 - Create: `hooks/lib-review-context.sh`
 - Modify: `hooks/run-review.sh:1121-1167` (commit-mode `AGENT_PROMPT` builder)
 - Test: `hooks/tests/run-review-test.sh` (new Test 24)
 
 **Interfaces:**
+
 - Produces: `extract_file_header_context <file>` — reads the given file's leading comment block (from the **working tree**, since pre-commit diffs are against the staged index and the file exists on disk at review time) and echoes up to the first 15 non-blank comment lines, stopping at the first line that is neither blank nor a comment (`^\s*#`). Echoes nothing if the file doesn't exist or has no leading comment block. Second parameter (optional) caps the number of lines extracted, default 15.
 - Consumes (from `run-review.sh`): `CHANGED_FILES` (already computed at line 836, currently only populated when `REVIEW_MODE == commit`), `DIFF`.
 
@@ -239,11 +241,13 @@ Ref: smartwatermelon/dev-env#35"
 ## Task 2: Round-over-round feedback memory (Fix 2)
 
 **Files:**
+
 - Modify: `hooks/lib-review-context.sh` (add round-memory functions)
 - Modify: `hooks/run-review.sh:1121-1230` (commit-mode prompt builder + post-verdict bookkeeping)
 - Test: `hooks/tests/run-review-test.sh` (new Test 25)
 
 **Interfaces:**
+
 - Produces (in `lib-review-context.sh`):
   - `round_history_key` — echoes a stable key derived from `git symbolic-ref --short HEAD` (or `detached` if none) plus the sorted, newline-joined list of changed files (via `CHANGED_FILES`, passed as `$1`). Uses `shasum -a 256` for a filesystem-safe filename, matching the existing `DIFF_HASH`/`file_cache_key` pattern (`run-review.sh:548`, `730`).
   - `write_round_feedback <history_file> <round_output>` — appends `round_output` (the code-reviewer's raw FAIL output) to `history_file`, keeping only the **last 2** rounds (drop the oldest when a 3rd is appended). Uses a `---ROUND---` separator, symmetric with `lib-review-issues.sh`'s `---ISSUE---` separator convention.
@@ -442,11 +446,13 @@ Ref: smartwatermelon/dev-env#35"
 ## Task 3: Reconciliation arbiter + disagreement logging (Fix 3)
 
 **Files:**
+
 - Modify: `hooks/run-review.sh:1283-1311` (verdict evaluation) and the model-selection block (~line 101-129)
 - Modify: `hooks/lib-review-issues.sh` is NOT touched — a separate, dedicated function is added directly in `run-review.sh` since the target repo (`smartwatermelon/claude-config`) is hardcoded and must never be confused with `REPO_OWNER`/`REPO_NAME` (the repo under review).
 - Test: `hooks/tests/run-review-test.sh` (new Tests 26, 27)
 
 **Interfaces:**
+
 - Produces (in `run-review.sh`):
   - `ARBITER_MODEL` git-config knob, default `claude-sonnet-4-6` (same default as `ADVERSARIAL_MODEL`; override via `git config review.arbiterModel <model-id>`).
   - `file_reviewer_disagreement_issue <code_reviewer_output> <adversarial_output> <arbiter_output> <arbiter_verdict>` — files a GitHub issue against the **hardcoded** `smartwatermelon/claude-config` repo (not `REPO_OWNER`/`REPO_NAME`) via `gh issue create`, best-effort (`|| true`, never blocks the commit). Called unconditionally whenever the arbiter runs, regardless of which side it picks.
@@ -766,6 +772,7 @@ Ref: smartwatermelon/dev-env#35"
 ## Task 4: Update documentation
 
 **Files:**
+
 - Modify: `hooks/run-review.sh:32-42` (header comment: CONFIGURATION section)
 - Modify: `~/.claude/docs/CODE-REVIEW.md` (via `~/Developer/claude-config`'s copy, if that doc is sourced from this repo — verify path first)
 

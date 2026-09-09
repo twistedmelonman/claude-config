@@ -10,9 +10,10 @@
 
 ---
 
-### Task 1: Create branch and reconcile local modifications
+## Task 1: Create branch and reconcile local modifications
 
 **Files:**
+
 - Modify: `hooks/run-review.sh:424`
 - Modify: `.gitignore` (add `sessions/`)
 
@@ -60,9 +61,10 @@ git -C ~/Developer/claude-config commit -m "chore: reconcile local ~/.claude mod
 
 ---
 
-### Task 2: Create install.sh
+## Task 2: Create install.sh
 
 **Files:**
+
 - Create: `install.sh`
 
 **Step 1: Write install.sh**
@@ -97,6 +99,7 @@ The script must include these sections in order:
 10. **`repair_symlinks()`** — iterate tracked files, find regular files where symlinks should be, copy content back to repo if different, restore symlink. Return count of repairs.
 11. **Repair-only mode**: if `--repair`, call `repair_symlinks`, exit.
 12. **Main symlink loop**:
+
     ```
     while IFS= read -r file; do
       skip if _is_excluded
@@ -104,12 +107,15 @@ The script must include these sections in order:
       _ensure_symlink "${REPO_DIR}/${file}" "${DEPLOY_DIR}/${file}"
     done < <(git -C "${REPO_DIR}" ls-files)
     ```
+
 13. **Submodule symlinks**: for each submodule root, create a directory-level symlink:
+
     ```
     while IFS= read -r sm_path; do
       _ensure_symlink "${REPO_DIR}/${sm_path}" "${DEPLOY_DIR}/${sm_path}"
     done < <(git -C "${REPO_DIR}" submodule --quiet foreach 'echo $sm_path')
     ```
+
 14. **Smoke tests**:
     - Verify `settings.json` is a symlink
     - Verify `CLAUDE.md` is a symlink
@@ -143,9 +149,10 @@ Idempotent bootstrap script that symlinks tracked files from
 
 ---
 
-### Task 3: Create scripts/update-tools.sh
+## Task 3: Create scripts/update-tools.sh
 
 **Files:**
+
 - Create: `scripts/update-tools.sh`
 
 **Step 1: Write update-tools.sh**
@@ -156,19 +163,24 @@ Called by `_claude_update()` in the user's shell. Sections:
 2. **Constants**: `REPO_DIR="${HOME}/Developer/claude-config"`, `DEPLOY_DIR="${HOME}/.claude"`
 3. **Formatting helpers**: same `_info`, `_ok`, `_warn` pattern
 4. **Section 1 — Symlink repair**:
+
    ```bash
    _info "Repairing symlinks..."
    repair_output=$("${REPO_DIR}/install.sh" --repair 2>&1)
    repair_result=$?
    echo "${repair_output}"
    ```
+
 5. **Section 2 — Submodule updates**:
+
    ```bash
    _info "Updating submodules..."
    git -C "${REPO_DIR}" submodule update --remote --merge 2>&1
    ```
+
 6. **Section 3 — Audit**:
    - **Known-runtime patterns** — a bash array of glob patterns for files/dirs Claude Code manages:
+
      ```bash
      _KNOWN_RUNTIME=(
        "projects" "sessions" "tasks" "todos" "telemetry" "memory"
@@ -184,6 +196,7 @@ Called by `_claude_update()` in the user's shell. Sections:
        "plugins/cache" # plugin cache dirs managed by Claude Code
      )
      ```
+
    - **`_is_known_runtime(path)`** — check if `path` (relative to `~/.claude`) matches any known-runtime pattern. Match directory entries by checking if the top-level component is in the list. Match file entries by basename or full relative path.
    - **Audit loop**: iterate files/dirs in `~/.claude` (depth 1), classify each as symlinked, known-runtime, or unknown.
    - **Report unknowns**: print a warning for each unknown file/dir. Exit 0 regardless (non-blocking).
@@ -214,9 +227,10 @@ symlinks, updates submodules, and audits ~/.claude for unknown files."
 
 ---
 
-### Task 4: Update .gitignore for docs/plans/
+## Task 4: Update .gitignore for docs/plans/
 
 **Files:**
+
 - Modify: `.gitignore`
 
 **Step 1: Check current .gitignore**
@@ -236,7 +250,7 @@ git -C ~/Developer/claude-config commit -m "chore: gitignore docs/plans/"
 
 ---
 
-### Task 5: Run install.sh for real (create symlinks)
+## Task 5: Run install.sh for real (create symlinks)
 
 **Step 1: Run dry-run one more time to review**
 
@@ -269,7 +283,7 @@ Start a new Claude Code session (in a separate terminal) and confirm it loads se
 
 ---
 
-### Task 6: Remove ~/.claude/.git (manual, one-time)
+## Task 6: Remove ~/.claude/.git (manual, one-time)
 
 **This task requires explicit human authorization. Do NOT proceed without it.**
 
@@ -302,7 +316,7 @@ cat ~/.claude/settings.json | head -3  # should show content from repo
 
 ---
 
-### Task 7: Run update-tools.sh and verify audit
+## Task 7: Run update-tools.sh and verify audit
 
 **Step 1: Run update-tools.sh**
 
@@ -311,6 +325,7 @@ cat ~/.claude/settings.json | head -3  # should show content from repo
 ```
 
 Expected:
+
 - Symlink repair: 0 repairs
 - Submodule update: up to date
 - Audit: lists any unknown files in `~/.claude` (these are expected runtime files we may need to add to known-runtime list)
@@ -318,6 +333,7 @@ Expected:
 **Step 2: Review audit output**
 
 If unknown files are reported, decide for each:
+
 - Add to known-runtime list in `update-tools.sh` → commit
 - Or bring into the repo → `git add`, run `install.sh`
 
@@ -330,7 +346,7 @@ git -C ~/Developer/claude-config commit -m "chore: expand known-runtime list fro
 
 ---
 
-### Task 8: Run tests and push
+## Task 8: Run tests and push
 
 **Step 1: Run full test suite**
 

@@ -16,7 +16,11 @@ case "${1:-show}" in
     cat "${LOG_FILE}"
     ;;
   count)
-    echo "Total blocked attempts: $(wc -l <"${LOG_FILE}" | tr -d ' ')"
+    # Assigned separately (rather than inline) so `wc`'s exit status is not
+    # masked by the surrounding substitution -- the form SC2312 asks for.
+    # LOG_FILE is guaranteed to exist by the guard above.
+    count=$(wc -l <"${LOG_FILE}")
+    echo "Total blocked attempts: ${count// /}"
     ;;
   today)
     today=$(date -u +%Y-%m-%d)

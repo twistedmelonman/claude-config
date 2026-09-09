@@ -220,6 +220,7 @@ truncate_code_diff() {
 
 # --- Non-Blocking Issue Functions (shared library) ---
 _LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib-review-issues.sh
 source "${_LIB_DIR}/lib-review-issues.sh"
 

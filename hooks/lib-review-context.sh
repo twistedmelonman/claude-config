@@ -65,8 +65,11 @@ round_history_key() {
   local changed_files="$1"
   local branch hash
   branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo "detached")
-  hash=$(printf '%s\n%s\n' "${branch}" "$(sort <<<"${changed_files}")" \
-    | shasum -a 256 2>/dev/null | awk '{print $1}')
+  # The `|| true` below satisfies SC2312 and changes nothing: the fallback
+  # here is value-based (`${hash:-noround}`), not status-based, exactly as
+  # the comment above describes.
+  hash=$(printf '%s\n%s\n' "${branch}" "$(sort <<<"${changed_files}" || true)" \
+    | { shasum -a 256 2>/dev/null || true; } | awk '{print $1}')
   printf '%s\n' "${hash:-noround}"
 }
 

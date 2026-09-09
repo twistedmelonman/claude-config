@@ -105,7 +105,7 @@ if printf '%s\n' "${cmd}" | grep -qE '(^|&&[[:space:]]*|\|\|[[:space:]]*|;[[:spa
   printf '\n' >&2
   printf 'This endpoint skips pre-merge review and merge authorization.\n' >&2
   printf '\n' >&2
-  printf 'Use `gh pr merge <number>` instead — it routes through pre-merge-review.sh.\n' >&2
+  printf "Use \`gh pr merge <number>\` instead — it routes through pre-merge-review.sh.\n" >&2
   printf '\n' >&2
   printf 'If gh pr merge is failing, report the failure and ask the human to merge manually.\n' >&2
   printf 'Do NOT use the REST API as a workaround.\n' >&2
@@ -119,7 +119,7 @@ if printf '%s\n' "${cmd}" | grep -qE '(^|&&[[:space:]]*|\|\|[[:space:]]*|;[[:spa
   printf '%s BLOCKED GRAPHQL MERGE: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ || true)" "${cmd}" >>"${HOME}/.claude/blocked-commands.log" || true
   printf '🛑 BLOCKED: GraphQL mergePullRequest mutation bypasses code quality gates.\n' >&2
   printf '\n' >&2
-  printf 'Use `gh pr merge <number>` instead — it routes through pre-merge-review.sh.\n' >&2
+  printf "Use \`gh pr merge <number>\` instead — it routes through pre-merge-review.sh.\n" >&2
   printf '\n' >&2
   printf 'If gh pr merge is failing, report the failure and ask the human to merge manually.\n' >&2
   exit 2
@@ -137,7 +137,7 @@ if printf '%s\n' "${cmd}" | grep -qE '(^|&&[[:space:]]*|\|\|[[:space:]]*|;[[:spa
   printf '🛑 BLOCKED: gh api graphql --input reads the mutation from a file,\n' >&2
   printf '   hiding its contents from the command-line merge-bypass scanners.\n' >&2
   printf '\n' >&2
-  printf 'If you are trying to merge a PR, use `gh pr merge <number>` instead.\n' >&2
+  printf "If you are trying to merge a PR, use \`gh pr merge <number>\` instead.\n" >&2
   printf 'If you need a legitimate GraphQL query, pass it inline via -f query=.\n' >&2
   printf 'If gh pr merge is failing, report the failure and ask the human to merge manually.\n' >&2
   exit 2
@@ -153,7 +153,7 @@ if printf '%s\n' "${cmd}" | grep -qE '(^|&&[[:space:]]*|\|\|[[:space:]]*|;[[:spa
   printf '   reads the payload body from a file via gh'"'"'s @<filename> convention,\n' >&2
   printf '   hiding its contents from the command-line merge-bypass scanners.\n' >&2
   printf '\n' >&2
-  printf 'If you are trying to merge a PR, use `gh pr merge <number>` instead.\n' >&2
+  printf "If you are trying to merge a PR, use \`gh pr merge <number>\` instead.\n" >&2
   printf 'If you need a legitimate GraphQL query, pass it inline via -f query=<body> (no @).\n' >&2
   printf 'If gh pr merge is failing, report the failure and ask the human to merge manually.\n' >&2
   exit 2
@@ -175,7 +175,7 @@ if printf '%s\n' "${cmd}" | grep -qE '(^|&&[[:space:]]*|\|\|[[:space:]]*|;[[:spa
   printf '\n' >&2
   printf 'Placing global flags before the subcommand skips pre-merge review and merge authorization.\n' >&2
   printf '\n' >&2
-  printf 'Use `gh pr merge <number>` (no global flags before the subcommand) instead.\n' >&2
+  printf "Use \`gh pr merge <number>\` (no global flags before the subcommand) instead.\n" >&2
   printf '\n' >&2
   printf 'If gh pr merge is failing, report the failure and ask the human to merge manually.\n' >&2
   printf 'Do NOT use global flag placement as a workaround.\n' >&2

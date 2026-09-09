@@ -278,7 +278,7 @@ check "heredoc body is matched at line start (not a bypass)" 2 "${inp}"
 # path_in_scope(). That token IS a valid in-scope prefix, so the hook would
 # approve it -- while the shell goes on to create `.claude/worktrees/my evil`,
 # a different path than the one validated. Refused rather than approximated.
-bs='\\'
+bs="\\\\"
 inp="$(make_input "git worktree add .claude/worktrees/my${bs} evil")"
 check "backslash: escaped space in an in-scope path is refused" 2 "${inp}"
 inp="$(make_input "git worktree add /tmp/my${bs} evil")"

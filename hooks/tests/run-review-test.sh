@@ -2901,12 +2901,12 @@ assert_contains \
 assert_eq \
   "FIX_NOW files NOTHING: no gh invocation at all" \
   "" \
-  "$(grep -c 'issue create' "${GH_CALLS}" 2>/dev/null | tr -d ' ' | sed 's/^0$//')"
+  "$({ grep -c 'issue create' "${GH_CALLS}" 2>/dev/null || true; } | { tr -d ' ' || true; } | { sed 's/^0$//' || true; })"
 
 assert_not_contains \
   "a FIX_NOW finding never renders a SEVERITY line into the prose block" \
   "SEVERITY: FIX_NOW" \
-  "$(cat "${TEST49_LOG}" 2>/dev/null || echo "")"
+  "$(cat "${TEST49_LOG}" 2>/dev/null || true)"
 
 # =========================================================
 # TEST 50: FIX_NOW alongside a real BLOCKING finding still blocks.
@@ -3055,7 +3055,7 @@ echo "=== Test 53: a redundant comment yields FIX_NOW, exit 0, no filing ==="
 setup_repo
 cd "${REPO_DIR}"
 # The canonical case: a comment that says exactly what its line already says.
-printf '%s\n' '# increment the counter' 'counter=$((counter + 1))' >>foo.sh
+printf '%s\n' '# increment the counter' "counter=\$((counter + 1))" >>foo.sh
 git add foo.sh
 cd - >/dev/null
 
@@ -3106,7 +3106,7 @@ assert_contains \
 assert_eq \
   "PIN: a redundant-comment finding is never filed" \
   "" \
-  "$(grep -c 'issue create' "${GH_CALLS53}" 2>/dev/null | tr -d ' ' | sed 's/^0$//')"
+  "$({ grep -c 'issue create' "${GH_CALLS53}" 2>/dev/null || true; } | { tr -d ' ' || true; } | { sed 's/^0$//' || true; })"
 
 # =========================================================
 # TEST 54: DETAILS renders from `details`, not as a repeat of ISSUE.
