@@ -11,6 +11,19 @@
 # `--repo` must follow the subcommand. The PreToolUse hook that blocks the
 # agent from running `merge-lock.sh authorize` matches the subcommand in
 # argument position 1; a global flag before it would slip past that regex.
+#
+# authorize takes a comma-separated list whose entries are either bare PR
+# numbers, resolved against --repo or the cwd, or repo-qualified tokens:
+#
+#   merge-lock.sh authorize 92,93 "wave 3" --repo owner/repo
+#   merge-lock.sh authorize owner/a#92,owner/b#7 "wave 3"
+#
+# The qualified form exists so one human command can authorize a fleet-wide
+# change; a 26-repo wave otherwise needs 26 invocations. It grants the same
+# 30-minute lock per PR and changes no part of the trust model: the hook
+# above still blocks the agent from running authorize at all, and every lock
+# stays keyed to its own repo. Note that all locks in one batch share a
+# timestamp, so 50 of them expire together 30 minutes after the command.
 set -euo pipefail
 unset CDPATH
 
@@ -61,8 +74,10 @@ resolve_repo() {
   fi
 }
 
+# Optional 2nd argument overrides the repo, for callers handling several in
+# one run; defaults to the resolved REPO.
 lock_path() {
-  echo "${LOCK_DIR}/${REPO}/pr-$1.lock"
+  echo "${LOCK_DIR}/${2:-${REPO}}/pr-$1.lock"
 }
 
 # Split "$@" (everything after the subcommand) into REPO_OVERRIDE and the
@@ -95,12 +110,17 @@ parse_args() {
 
 # --- Lock operations ---------------------------------------------------------
 
+# The optional 4th argument names the repo to write the lock under; it
+# defaults to the resolved REPO. Batch authorization passes it per entry so a
+# cross-repo batch never has to mutate the global mid-loop — a set -e exit
+# partway through would otherwise leave REPO holding some entry's value.
 create_merge_lock() {
   local pr_number="$1"
   local reason="$2"
   local ts="$3"
+  local repo="${4:-${REPO}}"
   local lock_file
-  lock_file=$(lock_path "${pr_number}")
+  lock_file=$(lock_path "${pr_number}" "${repo}")
 
   local user
   user=$(whoami)
@@ -108,13 +128,13 @@ create_merge_lock() {
   mkdir -p "$(dirname "${lock_file}")"
   {
     echo "PR_NUMBER=${pr_number}"
-    echo "REPO=${REPO}"
+    echo "REPO=${repo}"
     echo "AUTHORIZED_BY=${user}"
     echo "TIMESTAMP=${ts}"
     echo "REASON=${reason}"
   } >"${lock_file}"
 
-  echo -e "${GREEN}[merge-lock]${NC} Authorization created for ${REPO}#${pr_number}"
+  echo -e "${GREEN}[merge-lock]${NC} Authorization created for ${repo}#${pr_number}"
   echo -e "${GREEN}[merge-lock]${NC} Valid for 30 minutes"
   echo -e "${GREEN}[merge-lock]${NC} Lock file: ${lock_file}"
 }
@@ -245,10 +265,18 @@ authorize_batch() {
   local pr_arg="$1"
   local reason="$2"
 
-  # Parse comma-separated list into validated PR numbers.
+  # Each list entry is either a bare PR number, which resolves against the
+  # repo from --repo or the cwd, or a repo-qualified OWNER/NAME#N token. The
+  # qualified form lets one human command authorize a fleet-wide change
+  # across many repos; without it, a 26-repo wave needs 26 invocations.
+  #
+  # Parsing and validation complete before any lock is written: a typo in
+  # entry 40 of 50 must authorize nothing, rather than leaving the first 39
+  # granted and the operator unsure how far it got.
   local _pr_raw
   IFS=',' read -r -a _pr_raw <<<"${pr_arg}"
   local _pr_list=()
+  local _repo_list=()
   local _entry
   for _entry in "${_pr_raw[@]}"; do
     # Trim leading/trailing whitespace.
@@ -258,19 +286,43 @@ authorize_batch() {
       echo "Error: empty PR number in list" >&2
       exit 1
     fi
-    if [[ ! "${_entry}" =~ ^[0-9]+$ ]] || [[ "${_entry}" -le 0 ]]; then
+
+    local _entry_repo _entry_pr
+    if [[ "${_entry}" == *"#"* ]]; then
+      _entry_repo="${_entry%%#*}"
+      _entry_pr="${_entry#*#}"
+      # A second '#' would leave a non-numeric remainder; the PR check below
+      # rejects it, so no separate arm is needed here.
+      if [[ -z "${_entry_repo}" ]]; then
+        echo "Error: missing repo before '#' in: ${_entry}" >&2
+        exit 1
+      fi
+      # Reuse the slug validator that guards cwd/--repo resolution: the slug
+      # becomes two path segments of the lock path, so a traversing or
+      # slash-bearing slug must never reach lock_path.
+      if ! validate_repo_slug "${_entry_repo}"; then
+        echo "Error: invalid repo '${_entry_repo}' in '${_entry}' (expected OWNER/NAME)" >&2
+        exit 1
+      fi
+    else
+      _entry_repo="${REPO}"
+      _entry_pr="${_entry}"
+    fi
+
+    if [[ ! "${_entry_pr}" =~ ^[0-9]+$ ]] || [[ "${_entry_pr}" -le 0 ]]; then
       echo "Error: invalid PR number: ${_entry}" >&2
       exit 1
     fi
-    _pr_list+=("${_entry}")
+    _pr_list+=("${_entry_pr}")
+    _repo_list+=("${_entry_repo}")
   done
 
   # Shared timestamp so all TTLs align.
   local _ts
   _ts=$(date +%s)
-  local _pr
-  for _pr in "${_pr_list[@]}"; do
-    create_merge_lock "${_pr}" "${reason}" "${_ts}"
+  local _i
+  for _i in "${!_pr_list[@]}"; do
+    create_merge_lock "${_pr_list[${_i}]}" "${reason}" "${_ts}" "${_repo_list[${_i}]}"
   done
 }
 
@@ -285,12 +337,14 @@ parse_args "$@"
 case "${SUBCOMMAND}" in
   authorize | auth)
     if [[ -z "${POSITIONAL[0]:-}" ]]; then
-      echo "Usage: $0 authorize <pr_number[,pr_number...]> <reason> [--repo OWNER/NAME]" >&2
+      echo "Usage: $0 authorize <pr[,pr...]> <reason> [--repo OWNER/NAME]" >&2
+      echo "       each pr is N (uses --repo/cwd) or OWNER/NAME#N" >&2
       exit 1
     fi
     if [[ -z "${POSITIONAL[1]:-}" ]]; then
       echo "Error: reason is required" >&2
-      echo "Usage: $0 authorize <pr_number[,pr_number...]> <reason> [--repo OWNER/NAME]" >&2
+      echo "Usage: $0 authorize <pr[,pr...]> <reason> [--repo OWNER/NAME]" >&2
+      echo "       each pr is N (uses --repo/cwd) or OWNER/NAME#N" >&2
       exit 1
     fi
 
