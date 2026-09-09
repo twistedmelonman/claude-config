@@ -10,7 +10,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Read input once and pass to each hook
 input=$(cat)
 
+# hook-block-secret-leak.sh runs FIRST, deliberately. Every other hook here
+# logs the full command text to blocked-commands.log when it blocks, and this
+# loop stops at the first hook that does. If a command carries a live secret
+# AND trips another rule, running that other hook first would write the secret
+# to disk before the secret-leak hook ever saw it. First position means the
+# name-only log wins.
 for hook in \
+  "${SCRIPT_DIR}/hook-block-secret-leak.sh" \
   "${SCRIPT_DIR}/hook-block-no-verify.sh" \
   "${SCRIPT_DIR}/hook-block-short-no-verify.sh" \
   "${SCRIPT_DIR}/hook-block-main-commit.sh" \
