@@ -1,0 +1,130 @@
+# zizmor configuration for repos consuming the smartwatermelon workflow set.
+#
+# Copy this to the root of any repo that uses the caller stubs from this
+# repo's README, alongside your pre-commit hook. Without it, zizmor's blanket
+# hash-pin policy reports ~9 high findings against a byte-identical standard
+# caller stub, and the only workaround is `SKIP=zizmor` on every commit.
+#
+# That workaround is the actual hazard this file exists to remove. Routinely
+# skipping the security linter is what let anthropics/claude-code-action sit
+# at v1.0.70 for 123 releases while carrying GHSA-8q5r-mmjf-575q (see #123).
+# A linter people bypass by habit protects nothing.
+#
+# Every entry below is a *documented policy decision*, not a convenience
+# mute. Each one is justified against the code. Findings that reflect a real
+# gap are deliberately left visible — see the note on third-party actions.
+
+rules:
+  # ---------------------------------------------------------------------
+  # unpinned-uses
+  # ---------------------------------------------------------------------
+  # zizmor's default is a blanket hash-pin requirement: every `uses:` must
+  # name a commit SHA. That is correct for third-party actions and wrong for
+  # first-party reusable workflows, and this repo deliberately treats the two
+  # classes differently:
+  #
+  #   Third-party actions      -> SHA-pin, plus dependabot.yml to keep the
+  #   (actions/checkout, ...)     pins current. We do not control upstream, so
+  #                               a repointed tag would run arbitrary code on
+  #                               the next trigger.
+  #
+  #   First-party reusable     -> floating tag (@v3). We control this repo,
+  #   workflows (this repo)       its branch protection, and who moves the
+  #                               tag. Floating refs are what make coordinated
+  #                               fleet remediation possible at all.
+  #
+  # The second rule is not a relaxation — it is load-bearing. When
+  # GHSA-8q5r-mmjf-575q was patched here, the fix reached consumers by
+  # repointing one tag. The ~19 repos that had pinned an exact @v3.1.0
+  # silently received nothing, because immutable tags cannot carry a fix
+  # published after they were cut. Hash-pinning a first-party ref has the
+  # same effect, permanently.
+  #
+  # `ref-pin` still requires *a* ref — `@main` or a bare repo reference is
+  # rejected. It only lifts the hash requirement.
+  unpinned-uses:
+    config:
+      policies:
+        # First-party: tag refs are the convention (see README "Versioning").
+        smartwatermelon/github-workflows/*: ref-pin
+        # Everything else keeps the strict default. This line matters: it is
+        # what keeps genuine third-party findings visible. A blanket ignore
+        # here would also hide, e.g., `actions/checkout@v7` in a repo's own
+        # workflows — which is a real gap worth fixing, not policy.
+        "*": hash-pin
+
+  # ---------------------------------------------------------------------
+  # excessive-permissions
+  # ---------------------------------------------------------------------
+  # The caller stubs declare workflow-level permissions because the reusable
+  # workflows require them. They are not aspirational or copy-pasted:
+  #
+  #   contents: read        - checkout and diff reading
+  #   pull-requests: write  - posting and minimizing review comments
+  #   issues: write         - the inline-comment API path
+  #   id-token: write       - OIDC exchange for the app token
+  #
+  # `dependabot-auto-merge.yml` is in the list for the same reason but needs
+  # a different pair — `contents: write` to merge and `pull-requests: write`
+  # to approve. Both are inherent to what that workflow does; a read-only
+  # auto-merger is a contradiction. Note it deliberately runs with no
+  # `actions/checkout` (enforced by this repo's `guard-no-checkout` job), so
+  # the write scopes never combine with executing PR-controlled code.
+  #
+  # Removing any of them does not narrow the blast radius; it produces a
+  # `startup_failure` before the job runs. GitHub also does not let a caller
+  # grant a called workflow more than the called workflow declares for
+  # itself, so the effective ceiling is set in the reusable workflow, not
+  # here.
+  #
+  # Scoped to the three standard caller filenames only. A repo's own
+  # workflows are still audited normally — if `validate.yml` or `release.yml`
+  # asks for more than it needs, that finding still fires.
+  #
+  # These match on FILENAME, not on which reusable workflow is called, so the
+  # coupling is by naming convention. Note especially that `claude.yml` is the
+  # caller for `claude-assistant.yml` — the names differ, which is easy to
+  # misread as an omission. A consumer who names a caller anything else (say
+  # `claude-assistant-caller.yml`) gets excessive-permissions findings with no
+  # explanation; the fix is to rename the caller to the standard filename, or
+  # to add the local name here. See #142 and the README's zizmor section.
+  excessive-permissions:
+    ignore:
+      - claude-blocking-review.yml # caller for claude-blocking-review.yml
+      - claude.yml # caller for claude-assistant.yml
+      - dependabot-auto-merge.yml # caller for dependabot-auto-merge.yml
+      - standards-check.yml # caller for standards-check.yml
+
+  # A cooldown deliberately DELAYS applying action updates. This repo was
+  # burned by exactly that delay: claude-code-action sat at v1.0.70 for 123
+  # releases and stayed vulnerable to GHSA-8q5r-mmjf-575q with no PR opened
+  # (see #123 and the note at the top of .github/dependabot.yml). Adding a
+  # cooldown here would re-introduce the lag that incident was about, so the
+  # absence of one is a decision, not an oversight.
+  #
+  # This file also serves as the fleet-wide CI fallback policy:
+  # standards-check.yml uses it for any consuming repo that has no zizmor.yml
+  # of its own, so this ignore applies fleet-wide by design, not only here.
+  dependabot-cooldown:
+    ignore:
+      - dependabot.yml
+
+  # zizmor advises `$/...` for a same-repo reusable workflow call. GitHub and
+  # actionlint both reject that form — actionlint reports "not following the
+  # format owner/repo/path@ref nor ./path/to/workflow.yml" — so `./...` is the
+  # only syntax that actually runs. Verified against zizmor 1.30 / actionlint
+  # on 2026-09-08.
+  self-repository:
+    ignore:
+      - self-review.yml
+      - self-standards-check.yml
+
+  # markdownlint-cli2 and yamllint have no lockfile to install from — they are
+  # single pinned CLI tools, not project dependencies. standards-check.yml
+  # pins an exact version of each (MARKDOWNLINT_CLI2_VERSION,
+  # YAMLLINT_VERSION), and the three binary downloads next to them are
+  # additionally SHA256-verified. A lockfile would add a second place for the
+  # version to drift without removing the install.
+  adhoc-packages:
+    ignore:
+      - standards-check.yml
