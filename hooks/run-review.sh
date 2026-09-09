@@ -109,6 +109,11 @@ while [[ $# -gt 0 ]]; do
       MESSAGE_FILE="${2:-}"
       [[ $# -ge 2 ]] && shift
       ;;
+    # Unrecognized arguments are ignored, not fatal. This hook runs on every
+    # commit across every repo, invoked by git hooks whose argument lists we
+    # do not control; erroring here would block commits fleet-wide. Unknown
+    # --mode=* values DO error, above.
+    *) ;;
   esac
   shift
 done
@@ -1186,10 +1191,12 @@ downgrade_version_unfamiliarity_findings() {
 
 # --- Shared issue library (for --mode=codebase non-blocking issues) ---
 _LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib-review-issues.sh
 source "${_LIB_DIR}/lib-review-issues.sh"
 
 # --- Shared context-assembly library (file-header extraction, round memory) ---
+# shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib-review-context.sh
 source "${_LIB_DIR}/lib-review-context.sh"
 

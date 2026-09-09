@@ -9,6 +9,7 @@
 **Tech Stack:** Bash 5.x, bats for tests, shellcheck for lint.
 
 **Files in scope:**
+
 - Modify: `hooks/merge-lock.sh`
 - Create: `tests/test_merge_lock_batch_auth.bats`
 
@@ -29,6 +30,7 @@
 ## Task 1: Add failing tests first
 
 **Files:**
+
 - Create: `tests/test_merge_lock_batch_auth.bats`
 
 **Step 1: Write the failing test file**
@@ -133,6 +135,7 @@ git commit -m "test: add failing tests for merge-lock batch auth (#108)"
 ## Task 2: Implement batch auth in merge-lock.sh
 
 **Files:**
+
 - Modify: `hooks/merge-lock.sh`
 
 **Step 1: Change `create_merge_lock` to accept a timestamp argument**
@@ -247,6 +250,7 @@ Closes #108"
 ## Task 3: Update help text and verify end-to-end
 
 **Files:**
+
 - Modify: `hooks/merge-lock.sh` (help block, lines ~141–148)
 
 **Step 1: Update help text**
@@ -310,9 +314,11 @@ gh pr create --title "feat(merge-lock): support comma-separated PR list in auth 
 - **Shellcheck surprises in array parsing.** The `IFS=',' read -r -a` pattern avoids SC2207, but `_entry` trim expressions can trigger SC2295 (unquoted patterns) — the expressions above use `"${_entry%%[![:space:]]*}"` with full quoting. If shellcheck flags anything, fix it; do not `disable`.
 - **bats mock of `$HOME`.** Tests rely on `LOCK_DIR` resolving to `${HOME}/.claude/merge-locks` — verified from `hooks/merge-lock.sh:6`. If that path changes, the tests need updating.
 - **Breaking change on reason.** Any caller currently running `merge-lock auth 100` (no reason) will now fail. Search the repo for such callers before merging:
+
   ```
   Grep for: merge-lock.sh auth|merge-lock auth
   ```
+
   If any are found, update them in the same PR.
 
 ---

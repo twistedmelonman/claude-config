@@ -107,6 +107,7 @@ The global `~/.claude/last-review-result.log` is a pointer file with a `log:` fi
 ### Review Timeouts
 
 If review times out:
+
 - Retry the commit (transient failures happen)
 - Increase timeout: `git config review.timeout 300`
 - Split into smaller commits

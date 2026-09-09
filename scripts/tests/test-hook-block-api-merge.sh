@@ -128,9 +128,9 @@ check "Not exempt: chained git diff && gh api merge" 2 "${inp}"
 
 # Negative: command substitution $(gh ...) or `gh ...` inside a git commit -m
 # still invokes gh at runtime — exemption must NOT fire.
-inp="$(make_input 'git commit -m "$(gh api repos/o/r/pulls/1/merge --method PUT)"')"
+inp="$(make_input "git commit -m \"\$(gh api repos/o/r/pulls/1/merge --method PUT)\"")"
 check "Not exempt: git commit -m \"\$(gh api .../merge)\"" 2 "${inp}"
-inp="$(make_input 'git commit -m "`gh api repos/o/r/pulls/1/merge`"')"
+inp="$(make_input "git commit -m \"\`gh api repos/o/r/pulls/1/merge\`\"")"
 check "Not exempt: git commit -m \"\`gh api .../merge\`\"" 2 "${inp}"
 
 # Negative: --input anchor boundary — must not false-match future --input-format
@@ -157,7 +157,7 @@ check "Exempt: git -C /repo --no-pager show" 0 "${inp}"
 # happened to start with whitespace + gh. Now the negation only fires
 # when a real shell-operator boundary precedes the gh call.
 msg_at=$(printf 'feat: test\n\nExample:\n  gh api graphql -f query=%cmut.txt\n' 64)
-cmd_multiline=$(printf 'git -C /path commit -m "$(cat <<EOF\n%sEOF\n)"' "${msg_at}")
+cmd_multiline=$(printf "git -C /path commit -m \"\$(cat <<EOF\n%sEOF\n)\"" "${msg_at}")
 inp="$(make_input "${cmd_multiline}")"
 check "Exempt: git commit with indented gh api in heredoc body" 0 "${inp}"
 
@@ -177,7 +177,7 @@ check "Exempt: gh --repo <r> pr create with interposed flag" 0 "${inp}"
 # Negative: gh pr create body is exempted BUT a chained gh api merge still blocks.
 inp="$(make_input 'gh pr create --body "..." && gh api repos/o/r/pulls/1/merge')"
 check "Not exempt: gh pr create && gh api merge chain" 2 "${inp}"
-inp="$(make_input 'gh pr create --body "$(gh api repos/o/r/pulls/1/merge)"')"
+inp="$(make_input "gh pr create --body \"\$(gh api repos/o/r/pulls/1/merge)\"")"
 check "Not exempt: gh pr create body with \$(gh api merge)" 2 "${inp}"
 
 # Regression (#137): a literal-newline-chained gh api .../merge call must

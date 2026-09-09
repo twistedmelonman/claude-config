@@ -40,6 +40,7 @@ Repo-meta files that should not appear in `~/.claude`:
 Submodule directories are symlinked as **directory-level symlinks**, not per-file. The submodule repos live in `~/Developer/claude-config/.git/modules/` and the symlinked directories reference them correctly.
 
 Current submodules:
+
 - `plugins/marketplaces/superpowers-marketplace`
 
 ### Pre-flight: Reconcile local modifications
@@ -55,15 +56,18 @@ Before removing `~/.claude/.git`:
 Modeled on `~/Developer/dotfiles/install.sh`. Key functions:
 
 #### `_ensure_symlink(target, link)`
+
 - If symlink exists pointing to correct target → skip
 - If regular file exists → back up to `~/.claude/backups/symlink-migration/` with timestamp, then create symlink
 - If symlink exists pointing elsewhere → remove and recreate
 - If nothing exists → create parent dir if needed, create symlink
 
 #### `_is_excluded(file)`
+
 - Returns 0 if file matches exclusion list above
 
 #### `_is_submodule_path(file)`
+
 - Returns 0 if file is inside a submodule directory
 - Submodule roots get directory-level symlinks instead of per-file
 
@@ -88,6 +92,7 @@ Modeled on `~/Developer/dotfiles/install.sh`. Key functions:
 #### `--repair` mode
 
 Calls `repair_symlinks()` which:
+
 - Iterates tracked files
 - If `~/.claude/<file>` is a regular file where a symlink should be (atomic write artifact):
   - Compares content; if different, copies content back to repo
@@ -117,6 +122,7 @@ This is a one-time manual step, not part of install.sh (too destructive for auto
 Previously existed in commit `c85caaa` (lost during rebase). Resurrected and extended. Called automatically by `_claude_update()` in the user's shell `updates` command.
 
 Responsibilities:
+
 1. **Symlink repair** — run `install.sh --repair`
 2. **Submodule updates** — `git -C $REPO_DIR submodule update --remote`
 3. **Audit** — categorize all files in `~/.claude` into three buckets:
@@ -127,6 +133,7 @@ Responsibilities:
 #### Known-runtime list
 
 Maintained in `install.sh` as a bash array. Includes:
+
 - Runtime dirs: `projects/`, `sessions/`, `tasks/`, `todos/`, `telemetry/`, `memory/`, `cache/`, `debug/`, `file-history/`, `shell-snapshots/`, `merge-locks/`, `paste-cache/`, `logs/`, `channels/`, `backups/`, `agents-local/`
 - Runtime files: `.claude.json`, `mcp.json`, `mcp-needs-auth-cache.json`, `stats-cache.json`, `blocked-commands.log`, `last-review-result.log`, `settings.local.json`, `*.jsonl`, `installed_plugins.json`, `known_marketplaces.json`
 - Grows over time as new Claude Code managed paths are discovered

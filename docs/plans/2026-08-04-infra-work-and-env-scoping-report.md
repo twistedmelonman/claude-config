@@ -75,6 +75,7 @@ These are the operationally interesting parts: friction encountered
 while trying to follow the repo's own stated hook/validation policy.
 
 ### Gotcha 1: `zizmor` (GitHub Actions security linter) blocked an
+
 unrelated one-line fix
 
 **What happened:** Fixing pending-issue #10 (`Copier.yaml` still pinned
@@ -124,7 +125,8 @@ normally runs pre-commit. That pass instead ran later, automatically,
 as part of the pre-*push* hook (see Gotcha 2) — so nothing was actually
 skipped end-to-end, it just moved from pre-commit to pre-push.
 
-### Gotcha 2: pre-push review surfaced a real (if minor) inconsistency,
+### Gotcha 2: pre-push review surfaced a real (if minor) inconsistency
+
 plus two more unrelated pending-issues
 
 When `git push` ran, the repo's pre-push hook ran Semgrep, then a

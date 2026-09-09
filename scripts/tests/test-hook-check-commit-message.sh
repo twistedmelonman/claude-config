@@ -41,20 +41,20 @@ inp="$(make_input "git commit -m 'docs: update README'")"
 check "Valid: single-quoted docs: update README" 0 "${inp}"
 
 # Heredoc form (what Claude Code typically uses for multi-line messages)
-heredoc_cmd='git commit -m "$(cat <<'"'"'EOF'"'"'
+heredoc_cmd="git commit -m \"\$(cat <<'EOF'
 feat(hook): extend gh api scan
 
 Longer description in body.
 EOF
-)"'
+)\""
 inp="$(make_input "${heredoc_cmd}")"
 check "Valid: heredoc with conventional-commits summary" 0 "${inp}"
 
-heredoc_bad='git commit -m "$(cat <<'"'"'EOF'"'"'
+heredoc_bad="git commit -m \"\$(cat <<'EOF'
 not a conventional message
 body text
 EOF
-)"'
+)\""
 inp="$(make_input "${heredoc_bad}")"
 check "Blocked: heredoc with malformed summary" 2 "${inp}"
 
@@ -98,8 +98,8 @@ check "Pass-through: npm run (not git commit)" 0 "${inp}"
 
 # === AMBIGUOUS — should PASS (fail-open, let commit-msg gate) ===
 # Command substitution that isn't a heredoc: can't extract cleanly.
-inp="$(make_input 'git commit -m "$(some_command_without_heredoc)"')"
-check 'Fail-open: $(cmd) without heredoc' 0 "${inp}"
+inp="$(make_input "git commit -m \"\$(some_command_without_heredoc)\"")"
+check "Fail-open: \$(cmd) without heredoc" 0 "${inp}"
 inp="$(make_input "git commit -m \"\`some_backtick_sub\`\"")"
 check "Fail-open: backtick substitution" 0 "${inp}"
 
