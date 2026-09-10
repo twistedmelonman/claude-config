@@ -416,11 +416,19 @@ if [[ -z "${_protection_repo}" ]]; then
 fi
 
 if [[ -n "${BASE_REF}" && -n "${_protection_repo}" ]]; then
-  _prot_stderr=$(mktemp)
-  if _prot_json=$(command gh api \
+  # gh writes the JSON body to stdout and its "(HTTP nnn)" summary to stderr.
+  # Both are captured in ONE call: re-running to classify the error would
+  # double the request on every unprotected-branch merge and could observe a
+  # different failure than the first. Combining the streams is safe here (and
+  # not for the PR-JSON fetch above) because on success the body is parsed by
+  # jq with a `// []` fallback -- a stray gh warning yields the fail-closed
+  # empty set rather than a wrong required list.
+  _prot_out=$(command gh api \
     "repos/${_protection_repo}/branches/${BASE_REF}/protection/required_status_checks" \
-    2>"${_prot_stderr}"); then
-    REQUIRED_CONTEXTS=$(jq -c '.contexts // []' <<<"${_prot_json}" 2>/dev/null || echo "[]")
+    2>&1) && _prot_rc=0 || _prot_rc=$?
+
+  if [[ "${_prot_rc}" -eq 0 ]]; then
+    REQUIRED_CONTEXTS=$(jq -c '.contexts // []' <<<"${_prot_out}" 2>/dev/null || echo "[]")
     REQUIRED_SET_KNOWN=true
     # Assigned separately (rather than inline in log_info) so jq's exit status
     # is not masked by the surrounding command substitution -- the form SC2312
@@ -428,8 +436,7 @@ if [[ -n "${BASE_REF}" && -n "${_protection_repo}" ]]; then
     _req_list=$(jq -r 'join(", ") | if . == "" then "(none)" else . end' <<<"${REQUIRED_CONTEXTS}")
     log_info "Required checks on ${BASE_REF}: ${_req_list}"
   else
-    _prot_err=$(<"${_prot_stderr}")
-    case "${_prot_err}" in
+    case "${_prot_out}" in
       *"HTTP 404"*)
         log_warn "Branch ${BASE_REF} has no required status checks (HTTP 404) — treating ALL checks as blocking"
         ;;
@@ -442,7 +449,6 @@ if [[ -n "${BASE_REF}" && -n "${_protection_repo}" ]]; then
         ;;
     esac
   fi
-  rm -f "${_prot_stderr}"
 else
   log_warn "Base branch or repo unknown — treating ALL checks as blocking"
 fi
@@ -456,6 +462,12 @@ if [[ "${REQUIRED_SET_KNOWN}" == "true" ]]; then
 else
   # Fail-closed: everything is treated as required, reproducing the pre-#106
   # behavior exactly.
+  #
+  # The "other" selector with an EMPTY required set is what yields "every
+  # check" -- with nothing required, every check falls on the non-required
+  # side. Asking for "required" against an empty set would return the empty
+  # list and let a red PR through, which is the exact inversion this gate
+  # exists to prevent.
   REQUIRED_CHECKS=$(classify_status_checks "${_rollup}" '[]' other)
   NONREQUIRED_CHECKS="(required set could not be determined — all checks listed above are treated as blocking)"
 fi
