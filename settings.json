@@ -49,6 +49,14 @@
             "command": "~/.claude/scripts/hook-block-enter-worktree.sh"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.config/iterm2/cc-status"
+          }
+        ]
       }
     ],
     "SessionStart": [
@@ -58,6 +66,14 @@
           {
             "type": "command",
             "command": "~/.claude/scripts/hook-session-start.sh"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.config/iterm2/cc-status"
           }
         ]
       }
@@ -71,6 +87,14 @@
             "command": "~/.claude/scripts/hook-budget-guard.sh"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.config/iterm2/cc-status"
+          }
+        ]
       }
     ],
     "Stop": [
@@ -80,6 +104,74 @@
           {
             "type": "command",
             "command": "~/.claude/scripts/hook-budget-guard.sh"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.config/iterm2/cc-status"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.config/iterm2/cc-status"
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.config/iterm2/cc-status"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.config/iterm2/cc-status"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.config/iterm2/cc-status"
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.config/iterm2/cc-status"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.config/iterm2/cc-status"
           }
         ]
       }
