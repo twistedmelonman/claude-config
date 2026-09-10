@@ -296,8 +296,8 @@ fi
 # "unauthorized" result, and would falsely block an already-authorized merge.
 log_info "Fetching PR review data..."
 
-PR_JSON_FIELDS="number,title,state,reviews,comments,reviewDecision,statusCheckRollup"
-PR_JSON_FIELDS_FALLBACK="number,title,state,reviews,comments,reviewDecision"
+PR_JSON_FIELDS="number,title,state,reviews,comments,reviewDecision,statusCheckRollup,baseRefName"
+PR_JSON_FIELDS_FALLBACK="number,title,state,reviews,comments,reviewDecision,baseRefName"
 
 # Fetch with statusCheckRollup first; fall back without it if the PAT lacks
 # Checks permission (fine-grained PATs cannot access the Checks API).
@@ -339,11 +339,143 @@ fi
 PR_TITLE=$(echo "${PR_JSON}" | jq -r '.title')
 REVIEW_DECISION=$(echo "${PR_JSON}" | jq -r '.reviewDecision // "NONE"')
 
-# Extract and format CI check status
-STATUS_CHECKS=$(echo "${PR_JSON}" | jq -r '.statusCheckRollup // [] | if length == 0 then "No CI checks configured" else .[] | "- \(.name): \(.status) (\(.conclusion // "pending"))" end' 2>&1) || {
-  log_warn "Could not parse status checks"
-  STATUS_CHECKS="Status checks unavailable"
+# --- Required Check Classification Functions
+
+# Split the status-check rollup into checks that gate the merge on GitHub and
+# checks that do not.
+#
+# Why this exists (dev-env#106): the rollup lists EVERY check that ran. Feeding
+# it to the analysis prompt undifferentiated made a red advisory check —
+# standards-check, a Netlify preview, a lint job nobody made required — read as
+# "CI failure = blocking". That is stricter than GitHub itself, and it
+# deadlocked the lint burndown: a PR whose whole purpose is to fix a linter
+# leaves that linter red on its own PR, so the gate blocked the very commit
+# that would clear the debt.
+#
+# The rollup has TWO node shapes and only handling the first is a silent bug:
+#   CheckRun      (Actions jobs)  -> .name    / .conclusion, .status
+#   StatusContext (Netlify, etc.) -> .context / .state
+# kebab-tax-netlify's `netlify/kebab-tax/deploy-preview` is a StatusContext; it
+# rendered as a null name under the old expression.
+#
+# Args: $1 rollup JSON, $2 required-contexts JSON array, $3 which side to emit
+# ("required" or "other"). Prints the formatted list on stdout.
+classify_status_checks() {
+  local rollup_json="$1" required_json="$2" want="$3"
+  jq -r --argjson req "${required_json}" --arg want "${want}" '
+    def nm: (.name // .context // "unnamed");
+    def st: (.status // "COMPLETED");
+    def cc: (.conclusion // .state // "pending");
+    # Membership must be an equality scan: `index` on a string argument does
+    # substring matching, which would classify "lint" as required whenever
+    # "lint-functions" was.
+    def is_required: . as $n | any($req[]; . == $n);
+    (. // [])
+    | map(select((nm | is_required) == ($want == "required")))
+    | if length == 0 then
+        (if $want == "required" then
+          "(none — no required status checks on this branch)"
+        else
+          "(none)"
+        end)
+      else
+        .[] | "- \(nm): \(st) (\(cc))"
+      end
+  ' <<<"${rollup_json}" 2>/dev/null
 }
+
+# --- End Required Check Classification Functions
+
+# Fetch the set of status checks GitHub actually requires on the base branch.
+#
+# Fails CLOSED: if the required set cannot be determined for ANY reason —
+# unprotected branch (404), a PAT without admin-read on the repo (403), network
+# failure — every check is treated as required, which is exactly the behavior
+# before this change. A merge gate that silently relaxed itself because an API
+# call failed would be the worst outcome ([[reference_false_ok_pattern]]).
+#
+# The mode is logged on every run, and 403 is distinguished from 404, because
+# "required set unknown" looks identical to "everything passed" in the output
+# otherwise. A rotated PAT losing Administration:read would quietly restore the
+# old blocking behavior while the fix appeared to be in place.
+REQUIRED_CONTEXTS="[]"
+REQUIRED_SET_KNOWN=false
+BASE_REF=$(echo "${PR_JSON}" | jq -r '.baseRefName // empty')
+
+if [[ -n "${REPO_OWNER:-}" && -n "${REPO_NAME:-}" ]]; then
+  _protection_repo="${REPO_OWNER}/${REPO_NAME}"
+else
+  # REPO_OWNER/REPO_NAME are resolved further down for the merge lock; at this
+  # point rely on --repo when given, else gh's CWD resolution (same rule the
+  # other gh calls in this script already follow).
+  _protection_repo="${GH_REPO_OVERRIDE:-}"
+fi
+
+if [[ -z "${_protection_repo}" ]]; then
+  _protection_repo=$(command gh repo view --json nameWithOwner -q '.nameWithOwner' 2>/dev/null || true)
+fi
+
+if [[ -n "${BASE_REF}" && -n "${_protection_repo}" ]]; then
+  # gh writes the JSON body to stdout and its "(HTTP nnn)" summary to stderr.
+  # Both are captured in ONE call: re-running to classify the error would
+  # double the request on every unprotected-branch merge and could observe a
+  # different failure than the first. Combining the streams is safe here (and
+  # not for the PR-JSON fetch above) because on success the body is parsed by
+  # jq with a `// []` fallback -- a stray gh warning yields the fail-closed
+  # empty set rather than a wrong required list.
+  _prot_out=$(command gh api \
+    "repos/${_protection_repo}/branches/${BASE_REF}/protection/required_status_checks" \
+    2>&1) && _prot_rc=0 || _prot_rc=$?
+
+  if [[ "${_prot_rc}" -eq 0 ]]; then
+    REQUIRED_CONTEXTS=$(jq -c '.contexts // []' <<<"${_prot_out}" 2>/dev/null || echo "[]")
+    REQUIRED_SET_KNOWN=true
+    # Assigned separately (rather than inline in log_info) so jq's exit status
+    # is not masked by the surrounding command substitution -- the form SC2312
+    # asks for.
+    _req_list=$(jq -r 'join(", ") | if . == "" then "(none)" else . end' <<<"${REQUIRED_CONTEXTS}")
+    log_info "Required checks on ${BASE_REF}: ${_req_list}"
+  else
+    case "${_prot_out}" in
+      *"HTTP 404"*)
+        log_warn "Branch ${BASE_REF} has no required status checks (HTTP 404) — treating ALL checks as blocking"
+        ;;
+      *"HTTP 403"*)
+        log_warn "No permission to read branch protection (HTTP 403) — treating ALL checks as blocking"
+        log_warn "  The token needs Administration:read to distinguish required checks."
+        ;;
+      *)
+        log_warn "Could not read required checks — treating ALL checks as blocking"
+        ;;
+    esac
+  fi
+else
+  log_warn "Base branch or repo unknown — treating ALL checks as blocking"
+fi
+
+# Extract and format CI check status, split by whether GitHub requires them.
+_rollup=$(echo "${PR_JSON}" | jq -c '.statusCheckRollup // []' 2>/dev/null || echo "[]")
+
+if [[ "${REQUIRED_SET_KNOWN}" == "true" ]]; then
+  REQUIRED_CHECKS=$(classify_status_checks "${_rollup}" "${REQUIRED_CONTEXTS}" required)
+  NONREQUIRED_CHECKS=$(classify_status_checks "${_rollup}" "${REQUIRED_CONTEXTS}" other)
+else
+  # Fail-closed: everything is treated as required, reproducing the pre-#106
+  # behavior exactly.
+  #
+  # The "other" selector with an EMPTY required set is what yields "every
+  # check" -- with nothing required, every check falls on the non-required
+  # side. Asking for "required" against an empty set would return the empty
+  # list and let a red PR through, which is the exact inversion this gate
+  # exists to prevent.
+  REQUIRED_CHECKS=$(classify_status_checks "${_rollup}" '[]' other)
+  NONREQUIRED_CHECKS="(required set could not be determined — all checks listed above are treated as blocking)"
+fi
+
+if [[ -z "${REQUIRED_CHECKS}" ]]; then
+  log_warn "Could not parse status checks"
+  REQUIRED_CHECKS="Status checks unavailable"
+fi
 
 log_info "PR #${PR_NUMBER}: ${PR_TITLE}"
 log_info "Review decision: ${REVIEW_DECISION}"
@@ -675,11 +807,18 @@ else
   # Large diff - build smart targeted context
   log_info "Diff is large (${DIFF_LINES} lines), building smart targeted context..."
 
-  # Check if CI passed
+  # Check if CI passed, judged on the REQUIRED checks only — a red advisory
+  # check should not cost us diff-filtering headroom on a large PR.
+  #
+  # This tests for the ABSENCE of a failing/pending required check rather than
+  # the presence of a passing one. The previous form matched a single SUCCESS
+  # anywhere in the list, so a PR with one green check and four red ones read
+  # as "CI passed".
   CI_PASSED=false
-  if echo "${STATUS_CHECKS}" | grep -qE "(SUCCESS|PASS)"; then
+  if [[ -n "${REQUIRED_CHECKS}" ]] \
+    && ! echo "${REQUIRED_CHECKS}" | grep -qE "(FAILURE|NEUTRAL|CANCELLED|TIMED_OUT|pending|IN_PROGRESS|QUEUED)"; then
     CI_PASSED=true
-    log_info "CI passed - enabling smart data file filtering"
+    log_info "Required CI checks passed - enabling smart data file filtering"
   fi
 
   # Initialize counters (required before arithmetic operations with set -e)
@@ -796,10 +935,23 @@ Identify:
 5. **Inline file comments** - CRITICAL: Check comments posted directly on code lines (especially from bots)
 
 CRITICAL RULES:
-- **CI CHECK STATUS**: Check status is provided in "CI Check Status" section
-  - FAILURE/NEUTRAL conclusion = blocking issue that must be addressed
-  - SUCCESS = CI passed, but still check inline comments for specific concerns
-  - PENDING = check still running, cannot merge yet
+- **CI CHECK STATUS**: Checks are split into two sections below, and the split
+  determines whether a check can block the merge.
+  - **Required CI Checks** — these are the checks GitHub enforces on the base
+    branch. For these only:
+    - FAILURE/NEUTRAL conclusion = blocking issue that must be addressed
+    - PENDING = check still running, cannot merge yet
+    - SUCCESS = passed, but still check inline comments for specific concerns
+  - **Non-Required CI Checks** — advisory. A FAILURE, NEUTRAL, or PENDING here
+    is NEVER sufficient on its own for BLOCK_MERGE. GitHub itself would allow
+    this merge. Report such a check in your findings as context so the human
+    sees it, then continue evaluating on the required checks, reviewer
+    comments, and the diff.
+    - Do NOT rewrite a non-required failure as a "blocking issue" by arguing
+      the check ought to be required. Whether a check is required is a repo
+      configuration decision, not a call to make during a merge review.
+  - If a section says the required set could not be determined, treat EVERY
+    listed check as required (fail-closed).
 - **SEER EXCEPTION**: "Seer Code Review" check is NON-BLOCKING regardless of
   conclusion (SUCCESS/FAILURE/NEUTRAL/PENDING). Seer runs on Sentry
   infrastructure (flaky/rate-limited) and reports findings via NEUTRAL
@@ -889,8 +1041,11 @@ FULL_PROMPT="${ANALYSIS_PROMPT}
 PR #${PR_NUMBER}: ${PR_TITLE}
 Review Decision: ${REVIEW_DECISION}
 
-=== CI Check Status ===
-${STATUS_CHECKS}
+=== Required CI Checks (these gate the merge) ===
+${REQUIRED_CHECKS}
+
+=== Non-Required CI Checks (informational — never sufficient for BLOCK_MERGE) ===
+${NONREQUIRED_CHECKS}
 
 === Review Data (JSON) ===
 ${PR_JSON}
