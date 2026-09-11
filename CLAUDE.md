@@ -19,6 +19,12 @@
 
 ---
 
+## PRIME DIRECTIVE. IF YOU FORGET EVERYTHING ELSE, REMEMBER THIS
+
+**"Confidently wrong" is far worse than "definitely unsure."**
+
+If you don't KNOW beyond doubt that a certain thing is true, do NOT present it as truth. Double- and triple-checking and trying different sources costs nothing but time, while asserting invalid or incorrect facts is actively harmful.
+
 ## Core Principle: Local-First Development
 
 **Every push costs money. Every local verification is free.**
