@@ -60,12 +60,12 @@ it. If the Drive tools cannot be loaded at all, skip to the fallback in
 
    - If it exists, use its `id` as `parentId` in step 4.
    - If it does not exist, create it (`mimeType:
-     application/vnd.google-apps.folder`), then **tell the user plainly that
-     the new folder is not shared with anyone**. Offer to share it if they
-     supply an address. Never create the folder and report success without
-     stating that it is unshared — a handoff nobody else can read looks
-     identical to a working one until it fails.
-   - Never share the folder without the user asking for it in this session.
+     application/vnd.google-apps.folder`) and use the returned id.
+
+   Do not share the folder and do not ask about sharing. A single Google
+   account owns and reads every handoff document; the accounts this skill
+   hands off between are Claude accounts on the same machine, not Google
+   accounts. Sharing is not part of this workflow.
 
 3. Compose the export with exactly these sections:
 
@@ -119,17 +119,13 @@ it. If the Drive tools cannot be loaded at all, skip to the fallback in
    title contains 'Claude Handoff - <workstream>' and mimeType = 'application/vnd.google-apps.document'
    ```
 
-   For every match other than the one just created, in order of preference:
+   `trash_file` every match other than the one just created. The same Google
+   account owns every handoff document, so this is expected to succeed. If a
+   trash call does fail, say so plainly and name the document left behind —
+   do not report a clean handoff.
 
-   - `trash_file` it.
-   - If that fails (a non-owner usually cannot trash a file they did not
-     create), fall back to `update_file` to rename it
-     `<existing title> (superseded <ISO timestamp>)`.
-   - If both fail, say so plainly. Do not report a clean handoff.
-
-   Retirement is best-effort by design. The receiving agent selects the newest
-   document by `modifiedTime` regardless, so a stale copy left behind degrades
-   tidiness, not correctness.
+   A stale copy left behind degrades tidiness, not correctness: the receiving
+   agent selects the newest document by `modifiedTime` regardless.
 
 6. Confirm to the user in one line: the document title, and the folder it went
    to. Do not restate the export — they already saw it composed. If step 5

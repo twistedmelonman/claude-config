@@ -31,15 +31,12 @@ so plainly and stop; do not proceed as if the handoff had been read.
    ```
 
    **Select the match with the newest `modifiedTime`.** This rule is load-
-   bearing. `prepare-handoff` writes a new document per handoff and retires
-   the old ones on a best-effort basis, so more than one match is an expected
-   state, not an error.
+   bearing. `prepare-handoff` writes a new document per handoff and then
+   trashes the older ones, so a leftover match means a trash call failed.
+   Reading the newest is correct whether or not that cleanup succeeded.
 
-   - If more than one match survives, read the newest and **report the others
-     to the user as stale copies** — including any whose title ends in
-     `(superseded ...)`. Do not merge them.
-   - Do not read a document whose title marks it superseded unless it is the
-     only match, in which case say so before using it.
+   If more than one match survives, read the newest and **report the others to
+   the user as stale copies**. Do not merge them.
 
 3. Read the document with `read_file_content`.
 
