@@ -10,9 +10,20 @@
 #   quoting) that shellcheck catches deterministically and for free.
 #
 # WHY IT IS STILL LOCAL RATHER THAN DELETED:
-#   The global config also runs black, flake8, prettier, markdownlint and
-#   yamllint. Those are not wanted here. A local config is how this repo opts
-#   into the shell hook alone.
+#   The global config also runs black, flake8, prettier and yamllint. Those are
+#   not wanted here. A local config is how this repo opts into the hooks it
+#   does want.
+#
+# WHY MARKDOWNLINT WAS ADDED BACK (2026-09-10):
+#   Excluding it made this repo the fleet's worst standards-check offender:
+#   6 of 10 runs failed, every one of them on markdownlint, while CI lints
+#   Markdown whether or not the local config does. The opt-out did not remove
+#   the standard — it removed the only chance to satisfy it before pushing.
+#
+#   The same reasoning as the shell hook above applies: a linter that runs in
+#   CI and not locally converts a deterministic, auto-fixable finding into a
+#   failed PR. `markdownlint --fix` repairs the three rules responsible for
+#   nearly all of those failures (MD031, MD032, MD049) with no semantic change.
 #
 # ON THE index.lock CONFLICT the old comment described:
 #   The failure is real but is NOT caused by running hooks during a commit.
@@ -51,3 +62,29 @@ repos:
         # tags it `python`, so `types: [shell]` skips it on its own and no
         # exclusion is needed.
         exclude: ^.*\.bats$
+
+  # Markdown linting, byte-identical to the global config's hook definition
+  # (dotfiles/pre-commit/config.yaml) so the two cannot drift in behaviour.
+  #
+  # The repo-local-config probe in the entry is inert here — this repo has no
+  # .markdownlint.* at its root, so the else branch (the personal global
+  # config) is what runs. It is kept rather than simplified precisely to
+  # preserve byte-identity with global.
+  - repo: local
+    hooks:
+      - id: markdownlint
+        name: "Markdown Lint (fix)"
+        entry: >-
+          bash -c 'has_local_config=0;
+          for f in .markdownlint.json .markdownlint.yaml .markdownlint.yml
+          .markdownlint.jsonc .markdownlintrc; do
+          [[ -f "$f" ]] && { has_local_config=1; break; }; done;
+          if [[ "$has_local_config" -eq 1 ]]; then
+          markdownlint --fix "$@";
+          else
+          markdownlint --fix --config "$HOME/.config/markdownlint-cli/.markdownlint.json" "$@";
+          fi' --
+        language: system
+        types: [markdown]
+        pass_filenames: true
+        verbose: true
