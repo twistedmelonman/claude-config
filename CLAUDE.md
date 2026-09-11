@@ -325,9 +325,9 @@ Before declaring work done, output the full Completion Verification template fro
 
 - **Repo** lives at `~/Developer/claude-config` — NOT at `~/.claude`
 - **`~/.claude`** is the deployed runtime directory, managed via symlinks created by `install.sh`; it must NOT be a git repo (`install.sh` removes `~/.claude/.git` if present)
-- Submodules live under `plugins/marketplaces/`; initialize with `git submodule update --init --recursive`
+- This repo tracks no submodules. Plugin marketplaces under `~/.claude/plugins/marketplaces/` are cloned and kept current by Claude Code itself — runtime state, not repo content. Do not re-add one to track a marketplace.
 - `docs/plans/` directory exists for design/planning docs and should be committed
-- Key scripts: `install.sh` (symlink bootstrap), `scripts/update-tools.sh` (repair + submodule update), `scripts/post-push-status.sh <PR#>` (CI status polling)
+- Key scripts: `install.sh` (symlink bootstrap), `scripts/update-tools.sh` (symlink repair + `~/.claude` audit), `scripts/post-push-status.sh <PR#>` (CI status polling)
 
 ---
 

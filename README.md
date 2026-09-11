@@ -8,8 +8,8 @@ Personal Claude Code configuration for Andrew Rich.
 development directory and symlinks its tracked files into `~/.claude`.
 
 ```bash
-# 1. Clone (with submodules) into your development directory
-git clone --recurse-submodules git@github.com:smartwatermelon/claude-config.git ~/Developer/claude-config
+# 1. Clone into your development directory
+git clone git@github.com:smartwatermelon/claude-config.git ~/Developer/claude-config
 
 # 2. Run the install script to create symlinks into ~/.claude
 ~/Developer/claude-config/install.sh
@@ -29,7 +29,6 @@ are excluded.
 ```
 ~/Developer/claude-config/settings.json  -->  ~/.claude/settings.json  (symlink)
 ~/Developer/claude-config/hooks/run-review.sh  -->  ~/.claude/hooks/run-review.sh  (symlink)
-~/Developer/claude-config/plugins/marketplaces/superpowers-marketplace  -->  ~/.claude/plugins/marketplaces/superpowers-marketplace  (dir symlink)
 ```
 
 Edits to symlinked files (by you or Claude Code) write through to the repo,
@@ -51,17 +50,23 @@ The script is idempotent — safe to run repeatedly.
 command (via `_claude_update()`). It:
 
 1. **Repairs** broken symlinks via `install.sh --repair`
-2. **Updates** git submodules to latest remote
-3. **Audits** `~/.claude` — categorizes entries as symlinked (repo-managed),
+2. **Audits** `~/.claude` — categorizes entries as symlinked (repo-managed),
    known-runtime (Claude Code managed), or unknown (needs human triage)
 
 ### Submodules
 
-- **plugins/marketplaces/superpowers-marketplace** — smartwatermelon/superpowers-marketplace (fork of obra/superpowers-marketplace, forced SessionStart hook removed)
+None. This repo tracks no submodules.
+
+Marketplaces — `superpowers-marketplace` included — are cloned and updated by
+Claude Code itself under `~/.claude/plugins/marketplaces/`, registered in
+`~/.claude/plugins/known_marketplaces.json`. They are runtime state, not repo
+content, so there is no pointer here to bump.
 
 ## Installed Plugins
 
-Plugins are sourced from seven marketplaces (six `extraKnownMarketplaces` entries plus the `superpowers-marketplace` submodule). Enabled state is tracked in `settings.json`.
+Plugins are sourced from marketplaces registered in
+`~/.claude/plugins/known_marketplaces.json` and managed by Claude Code.
+Enabled state is tracked in `settings.json`.
 
 ### From superpowers-marketplace
 
@@ -118,10 +123,10 @@ from the tracked default.
 │   └── marketplaces/
 │       ├── claude-code-workflows         # Plugin marketplace
 │       ├── claude-plugins-official       # Plugin marketplace
-│       ├── smartwatermelon-marketplace   # Personal marketplace (git submodule source)
-│       ├── superpowers-marketplace       # Git submodule → smartwatermelon/superpowers-marketplace
-│       ├── personify                     # Plugin marketplace (runtime-installed, not a submodule)
-│       └── pr-review                     # Plugin marketplace (runtime-installed, not a submodule)
+│       ├── smartwatermelon-marketplace   # Personal marketplace
+│       ├── superpowers-marketplace       # Upstream obra/superpowers-marketplace
+│       ├── personify                     # Plugin marketplace
+│       └── pr-review                     # Plugin marketplace
 ├── settings.json                         # enabledPlugins and hook configuration
 │                                          # (notable keys documented in docs/INFRASTRUCTURE.md § Settings Rationale)
 ├── plugins/installed_plugins.json        # Runtime state (not tracked)

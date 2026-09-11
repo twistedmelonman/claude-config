@@ -3,7 +3,7 @@ set -euo pipefail
 
 # ~/Developer/claude-config/scripts/update-tools.sh
 # Called by _claude_update() in bash profile.
-# Maintains symlink health, updates submodules, and audits ~/.claude/.
+# Maintains symlink health and audits ~/.claude/.
 # Exit 0 always — must not break the update flow.
 
 if [[ "${BASH_VERSINFO[0]}" -lt 5 ]]; then
@@ -45,21 +45,7 @@ else
 fi
 
 # ============================================================================
-# 2. SUBMODULE UPDATES
-# ============================================================================
-
-_info "Updating submodules..."
-
-if git -C "${REPO_DIR}" config --file .gitmodules --get-regexp path >/dev/null 2>&1; then
-  git -C "${REPO_DIR}" submodule sync
-  git -C "${REPO_DIR}" submodule update --remote --merge
-  _ok "Submodules updated"
-else
-  _ok "No submodules to update"
-fi
-
-# ============================================================================
-# 3. AUDIT — categorize depth-1 entries in ~/.claude/
+# 2. AUDIT — categorize depth-1 entries in ~/.claude/
 # ============================================================================
 
 _info "Auditing ${DEPLOY_DIR}/..."

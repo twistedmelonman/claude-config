@@ -171,6 +171,7 @@ Under `scripts/tests/`, matching existing convention. Each case feeds the hook
 a synthetic `PreToolUse` JSON payload on stdin and asserts the exit code.
 
 **Must block** (in a `beacon-biosignals` remote):
+
 1. `git checkout -b claude/foo`
 2. `git switch -c claude/foo`
 3. `git branch claude/foo`

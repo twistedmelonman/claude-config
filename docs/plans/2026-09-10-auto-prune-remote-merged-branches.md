@@ -89,6 +89,7 @@ is the case that most needs a human, and it is exactly the case a naive
 implementation would destroy.
 
 Additional refusals:
+
 - Never touch the currently checked-out branch.
 - Never touch `main` / the default branch, regardless of state.
 - Skip repos with a rebase/merge/bisect in progress.
