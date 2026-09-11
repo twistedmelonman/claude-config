@@ -1,7 +1,7 @@
 ---
 name: prepare-handoff
 description: Use when the user explicitly says "prepare handoff," "wrap up for handoff," or asks to save the current session's state so another session can resume the work. Writes a dense, structured export — not a prose summary — to a Google Drive document so a later session can resume with minimal re-derivation. Verifies every path, branch, and identifier it records before writing, so the next session does not inherit stale pointers. Do not trigger on generic session-ending language like "thanks" or "bye."
-version: 1.3.0
+version: 1.4.0
 ---
 
 # Prepare Handoff
@@ -257,6 +257,21 @@ it. If the Drive tools cannot be loaded at all, skip to the fallback in
      repo path on every single line, and the heading loses to the path every
      time. One prefix per line, no exceptions, even when every entry in the
      block shares a location.
+
+     **Write the path that resolves, not the path you think of it by.** For a
+     cloud drive synced locally, that means the absolute mount path, because
+     that is what the receiving agent can open with ordinary file tools:
+
+     ```text
+     [drive] /Users/<user>/Library/CloudStorage/GoogleDrive-<account>/My Drive/knowledge-base/topics/<area>/projects/<project>/status.md — current state, rewrite-in-place
+     ```
+
+     not `knowledge-base/topics/<area>/projects/<project>/status.md`, which
+     reads as repo-relative and sends the reader to a repo that does not have
+     it. Paste the path from the command you used to verify the file. A
+     drive-backed file is usually reachable both through the connector and at
+     a local mount; give the local path, since that is the one that supports
+     ordinary reads and surgical edits.
    - **Name the branch and check it out.** For each repo, record the current
      branch and its HEAD commit subject. Verify with
      `git -C <path> branch --show-current` and `git -C <path> log --oneline -1`.

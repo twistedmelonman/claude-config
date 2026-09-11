@@ -1,7 +1,7 @@
 ---
 name: receive-handoff
 description: Use when the user explicitly says "receive handoff," "pick up where I left off," or starts a session continuing work saved by an earlier session. Reads the Google Drive handoff export and loads the files and KB entries it points to, so this session starts with working context rather than a description of context. Typically the first message of a session.
-version: 1.2.0
+version: 1.3.0
 ---
 
 # Receive Handoff
@@ -109,6 +109,31 @@ so plainly and stop; do not proceed as if the handoff had been read.
 
    - For each entry under **Relevant KB / memory**, read that specific file or
      memory path directly rather than proceeding on the label alone.
+   - **Resolve a relative path against every plausible root before calling it
+     missing.** A path like `knowledge-base/topics/<area>/projects/<project>/status.md`
+     looks repo-relative, but a cloud-drive mount has its own root and the
+     same path may resolve there. A cloud drive synced to the local
+     filesystem is reachable with ordinary file tools — it is not
+     API-only — so "the connector did not return it" is not evidence of
+     absence either. Before reporting any path missing, try:
+
+     ```bash
+     # the obvious repo root
+     ls <repo>/<path>
+     # local sync mounts (macOS Google Drive shown; adjust per provider)
+     ls ~/Library/CloudStorage/GoogleDrive-*/My\ Drive/<path>
+     # and fall back to a name search rather than concluding from two misses
+     find <candidate-root> -name "$(basename <path>)" -not -path '*/.git/*' 2>/dev/null
+     ```
+
+     **Check project memory for the answer first.** A recorded reference
+     memory naming the correct root is faster and more reliable than
+     searching, and a prior session has usually already paid this cost. This
+     exact failure has happened: a KB path was reported missing from the git
+     repo and the Drive API while all four files sat readable at the local
+     Drive sync mount — and a memory entry recording that mount path already
+     existed, unconsulted. "Not where the export implied" means the root is
+     wrong far more often than it means the file is gone.
    - For **Files in scope**, open the files needed to act on the stated
      **Next step**. Don't open every listed file speculatively if only one or
      two are relevant to the immediate next action — open the rest on demand
@@ -238,7 +263,11 @@ so plainly and stop; do not proceed as if the handoff had been read.
    - **claims that were already wrong when the document was written** —
      separately from ones that decayed afterward, with both timestamps
 
-   - referenced files or KB paths that no longer exist
+   - referenced files or KB paths that no longer exist — only after trying
+     every plausible root, including local cloud-drive sync mounts, and only
+     after checking project memory for a recorded root. Say which roots you
+     tried. "Missing" asserted from one failed lookup is the easiest wrong
+     finding to produce in this whole skill, and it reads as authoritative.
    - a path whose stated location is wrong — a repo-shaped path that actually
      lives in a cloud drive, or vice versa. Say where it really is; do not
      report it as missing when it resolved somewhere else.
