@@ -101,7 +101,7 @@
       {
         "hooks" : [
           {
-            "command" : "\/Users\/arich\/.config\/iterm2\/cc-status",
+            "command" : "~\/.config\/iterm2\/cc-status",
             "type" : "command"
           }
         ]
@@ -111,7 +111,7 @@
       {
         "hooks" : [
           {
-            "command" : "\/Users\/arich\/.config\/iterm2\/cc-status",
+            "command" : "~\/.config\/iterm2\/cc-status",
             "type" : "command"
           }
         ]
@@ -121,7 +121,7 @@
       {
         "hooks" : [
           {
-            "command" : "\/Users\/arich\/.config\/iterm2\/cc-status",
+            "command" : "~\/.config\/iterm2\/cc-status",
             "type" : "command"
           }
         ]
@@ -167,7 +167,7 @@
       {
         "hooks" : [
           {
-            "command" : "\/Users\/arich\/.config\/iterm2\/cc-status",
+            "command" : "~\/.config\/iterm2\/cc-status",
             "type" : "command"
           }
         ]
@@ -177,7 +177,7 @@
       {
         "hooks" : [
           {
-            "command" : "\/Users\/arich\/.config\/iterm2\/cc-status",
+            "command" : "~\/.config\/iterm2\/cc-status",
             "type" : "command"
           }
         ]
@@ -196,7 +196,7 @@
       {
         "hooks" : [
           {
-            "command" : "\/Users\/arich\/.config\/iterm2\/cc-status",
+            "command" : "~\/.config\/iterm2\/cc-status",
             "type" : "command"
           }
         ]
@@ -215,7 +215,7 @@
       {
         "hooks" : [
           {
-            "command" : "\/Users\/arich\/.config\/iterm2\/cc-status",
+            "command" : "~\/.config\/iterm2\/cc-status",
             "type" : "command"
           }
         ]
@@ -225,7 +225,7 @@
       {
         "hooks" : [
           {
-            "command" : "\/Users\/arich\/.config\/iterm2\/cc-status",
+            "command" : "~\/.config\/iterm2\/cc-status",
             "type" : "command"
           }
         ]
@@ -244,7 +244,7 @@
       {
         "hooks" : [
           {
-            "command" : "\/Users\/arich\/.config\/iterm2\/cc-status",
+            "command" : "~\/.config\/iterm2\/cc-status",
             "type" : "command"
           }
         ]
@@ -254,7 +254,7 @@
       {
         "hooks" : [
           {
-            "command" : "\/Users\/arich\/.config\/iterm2\/cc-status",
+            "command" : "~\/.config\/iterm2\/cc-status",
             "type" : "command"
           }
         ]
