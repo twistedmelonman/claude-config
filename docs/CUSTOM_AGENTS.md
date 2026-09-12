@@ -1,182 +1,166 @@
 # Custom Agents
 
-This document explains how to manage custom agents that are not part of external packages.
+This document explains where this configuration's custom agents live, and how
+to add or change one.
 
-> **Note for Repository Clones:** This configuration is personal. The `~/.claude/agents-local/` directory is not included in this repository (it's `.gitignored`). If you clone this repo, you'll need to create your own `agents-local` directory following the setup instructions below. The git hooks will gracefully skip adversarial-reviewer if it's not present.
+> **Note for repository clones:** custom agents are **not** stored in this
+> repository. They are published in a separate marketplace repo
+> (`smartwatermelon/smartwatermelon-marketplace`) and installed by Claude Code
+> into `~/.claude/plugins/`, which is runtime state. Cloning this repo does not
+> give you the agents; install the marketplace instead (see
+> [Installing](#installing-the-marketplace)). The git hooks degrade gracefully
+> when `adversarial-reviewer` is absent — see [Hook
+> behavior](#hook-behavior-when-the-agent-is-missing).
 
-## Problem
+## Where custom agents live
 
-Custom agents stored in the wshobson/agents marketplace (now forked as smartwatermelon/claude-code-workflows-agents) (`~/.claude/agents/plugins/`) get overwritten when the package updates, because they're treated as part of that package.
+Custom agents ship as **plugins in a marketplace you own**. The
+`adversarial-reviewer` agent is the `code-critic` plugin:
 
-## Solution
-
-Custom agents are now stored in a separate local marketplace: `~/.claude/agents-local/`
-
-This directory:
-
-- Is a separate git repository (not a submodule)
-- Is excluded from the main `.claude` repository via `.gitignore`
-- Won't be touched by package updates
-- Can be managed independently and backed up to its own remote
-
-## Directory Structure
-
+```text
+~/.claude/plugins/
+├── marketplaces/
+│   └── smartwatermelon-marketplace/          # cloned + updated by Claude Code
+│       ├── .claude-plugin/marketplace.json
+│       └── plugins/
+│           └── code-critic/
+│               ├── .claude-plugin/plugin.json
+│               └── agents/
+│                   └── adversarial-reviewer.md
+└── cache/
+    └── smartwatermelon-marketplace/
+        └── code-critic/1.4.0/                # resolved version actually used
 ```
-~/.claude/agents-local/
-├── README.md
-└── plugins/
-    └── adversarial-review/
-        └── agents/
-            └── adversarial-reviewer.md
+
+Marketplace source: <https://github.com/smartwatermelon/smartwatermelon-marketplace>
+
+Owning the marketplace is what makes this safe. An earlier layout kept agents
+in a local-only directory (`~/.claude/agents-local/`) specifically to stop a
+third-party package update from overwriting them. That directory no longer
+exists, and the concern no longer applies: nobody else publishes to this
+marketplace, so an update can only deliver your own changes.
+
+**Everything under `~/.claude/plugins/` is runtime state.** Claude Code clones
+and updates it. Do not track it in this repo, do not symlink it from
+`install.sh`, and do not hand-edit an installed agent — edits there are
+overwritten on the next update, and they are not the source of truth.
+
+## How discovery works
+
+Claude Code scans `~/.claude/plugins/marketplaces/` for plugins and registers
+each agent it finds. No install step is needed beyond adding the marketplace,
+and no restart is needed after an agent file changes.
+
+**Agent IDs are not always the bare `name:` from the frontmatter.** The
+installed ID depends on the plugin, and getting it wrong fails silently — a
+mistyped ID errors per-invocation without blocking the commit, so reviews
+quietly stop happening. To list the real IDs:
+
+```bash
+claude --agent bogus -p "x"    # the error lists every available agent ID
 ```
 
-## How Custom Agents Work
+Current IDs:
 
-**Important:** You don't need to "install" custom agents. They work automatically once placed in the marketplace directory.
+| Agent | ID to use |
+| --- | --- |
+| adversarial-reviewer | `adversarial-reviewer` (bare name; unique) |
+| code-reviewer | `comprehensive-review:comprehensive-review-code-reviewer` |
 
-Claude Code discovers agents by scanning marketplace directories (`~/.claude/plugins/marketplaces/`) for `.md` files. A symlink at `~/.claude/plugins/marketplaces/custom-agents` points to `~/.claude/agents-local/`, making all agents in that directory discoverable.
+The second one doubles the plugin name because that is what the
+`comprehensive-review` plugin's own frontmatter declares. Verify, don't assume.
 
 **Usage:**
 
-- **Git hooks**: Invoke via `claude --agent adversarial-reviewer` (works immediately)
-- **Task tool**: Use `subagent_type: "code-critic:adversarial-reviewer"` in Task calls (requires full `plugin:agent` format)
-- **No restart needed**: Changes to agent files are picked up on next invocation
+- **Git hooks / CLI**: `claude --agent adversarial-reviewer -p "..."`
+- **Agent tool**: `subagent_type: "code-critic:adversarial-reviewer"`
+  (the full `plugin:agent` form)
 
-## Initial Setup
-
-If you're setting up custom agents for the first time (or cloned this repo), follow these steps:
-
-### 1. Create the agents-local directory structure
+## Installing the marketplace
 
 ```bash
-mkdir -p ~/.claude/agents-local/plugins/adversarial-review/agents
-cd ~/.claude/agents-local
-git init
+claude plugin marketplace add smartwatermelon/smartwatermelon-marketplace
+claude plugin install code-critic@smartwatermelon-marketplace
 ```
 
-### 2. Create the adversarial-reviewer agent
+Verify the agent resolves:
 
 ```bash
-cat > ~/.claude/agents-local/plugins/adversarial-review/agents/adversarial-reviewer.md << 'EOF'
----
-name: adversarial-reviewer
-description: Skeptical senior engineer who assumes code is wrong until proven otherwise
-model: sonnet
----
-
-# Adversarial Code Reviewer
-
-[Your custom agent prompt here - see existing agent for full content]
-EOF
+find -L ~/.claude/plugins/marketplaces -name "adversarial-reviewer.md" -type f
 ```
 
-### 3. Initialize the git repository
+That `find` is the same check `hooks/run-review.sh` uses to decide whether the
+agent is available.
+
+## Hook behavior when the agent is missing
+
+`hooks/run-review.sh` runs `code-reviewer` and `adversarial-reviewer` in
+parallel. If the `find` check above returns nothing, it logs a warning and
+falls back to running `code-reviewer` alone. Commits still work; you simply
+lose the adversarial pass and the arbiter that reconciles the two when they
+disagree.
+
+## Adding or changing an agent
+
+Agents are edited in the **marketplace repo**, not here and not in
+`~/.claude/plugins/`.
+
+### 1. Clone the marketplace repo
 
 ```bash
-cd ~/.claude/agents-local
-git add .
-git commit -m "feat(agents): initial custom agents setup"
+git clone git@github.com:smartwatermelon/smartwatermelon-marketplace.git
 ```
 
-### 4. Verify the symlink exists
+### 2. Add or edit the agent file
 
-The symlink should already exist from this repo:
+Add a plugin directory with an `agents/` subdirectory, or edit an existing
+agent file. Agent frontmatter:
 
-```bash
-ls -la ~/.claude/plugins/marketplaces/custom-agents
-# Should show: custom-agents -> ../../agents-local
-```
-
-If the symlink doesn't exist, create it:
-
-```bash
-cd ~/.claude/plugins/marketplaces
-ln -s ../../agents-local custom-agents
-```
-
-### 5. Test the agent
-
-```bash
-claude --agent adversarial-reviewer -p "Test prompt"
-```
-
-The agent should now be available for git hooks and the Task tool.
-
-## Adding New Custom Agents
-
-To add a new custom agent:
-
-1. Create the plugin structure:
-
-```bash
-mkdir -p ~/.claude/agents-local/plugins/my-custom-agent/agents
-```
-
-2. Create the agent file:
-
-```bash
-cat > ~/.claude/agents-local/plugins/my-custom-agent/agents/my-agent.md << 'EOF'
+```markdown
 ---
 name: my-agent
-description: What this agent does
-model: sonnet  # or opus, haiku
+description: What this agent does, and when it should be chosen.
+model: opus  # or sonnet, haiku
 ---
 
 # Agent Prompt
 
 Your agent's system prompt here...
-EOF
 ```
 
-3. Commit it:
+The `description` is what a dispatching agent reads to decide whether to pick
+this agent. Write it as selection criteria, not as a title.
+
+### 3. Bump both version numbers
+
+Bump `version` in the plugin's `.claude-plugin/plugin.json` **and** in the
+marketplace's `.claude-plugin/marketplace.json` entry. These are two separate
+files and drift apart easily — as of 1.4.0 they already have.
+
+### 4. Commit, push, then update locally
 
 ```bash
-cd ~/.claude/agents-local
-git checkout -b add-my-agent
-git add .
-git commit -m "feat(agents): add my-agent"
-git checkout main-branch
-git merge add-my-agent
+claude plugin marketplace update smartwatermelon-marketplace
 ```
 
-4. The agent is immediately available (no restart needed)
-
-## Updating Custom Agents
-
-To update an existing custom agent:
-
-1. Edit the agent file:
+### 5. Confirm the new version resolved
 
 ```bash
-vim ~/.claude/agents-local/plugins/adversarial-review/agents/adversarial-reviewer.md
+ls ~/.claude/plugins/cache/smartwatermelon-marketplace/code-critic/
 ```
 
-2. Commit the changes:
+Scope the tools in frontmatter (`tools:` / `allowed-tools:` /
+`disallowed-tools:`) — see [Writing a thrifty dispatch
+prompt](#writing-a-thrifty-dispatch-prompt) for why a narrow agent is cheaper
+than a generic one.
 
-```bash
-cd ~/.claude/agents-local
-git checkout -b update-adversarial-reviewer
-git add .
-git commit -m "feat(agents): update adversarial-reviewer - describe changes"
-git checkout main-branch
-git merge update-adversarial-reviewer
-```
+## Current custom agents
 
-3. Changes take effect on next agent invocation (no restart needed)
-
-## Backup
-
-Since this is a git repository, you can back it up to a remote:
-
-```bash
-cd ~/.claude/agents-local
-git remote add origin <your-private-repo-url>
-git push -u origin main-branch
-```
-
-## Current Custom Agents
-
-- **adversarial-review/adversarial-reviewer**: Skeptical senior engineer who reviews code assuming it's wrong until proven otherwise
+- **code-critic / adversarial-reviewer** (`model: opus`): single-pass skeptical
+  review that assumes the code is wrong until proven otherwise. Used by
+  `hooks/run-review.sh` for the per-commit adversarial pass, the full-diff
+  review, the codebase-mode scan, and as the arbiter when `code-reviewer` and
+  `adversarial-reviewer` disagree.
 
 ## Subagent Lifetime Budget
 
