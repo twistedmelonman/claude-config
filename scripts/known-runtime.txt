@@ -37,6 +37,7 @@ uploads
 calibration-samples
 feedback
 personify-evidence
+usage-data
 
 # Files
 .claude.json
