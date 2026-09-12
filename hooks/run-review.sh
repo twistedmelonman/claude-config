@@ -1191,13 +1191,28 @@ downgrade_version_unfamiliarity_findings() {
 
 # --- Shared issue library (for --mode=codebase non-blocking issues) ---
 _LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The source-path/source directives below resolve both libs locally, where the
+# siblings sit next to this script. They do NOT resolve under the CI checkout
+# layout (standards-check checks out the repo into a ./repo subdirectory), so
+# `shellcheck -S info` there reports SC1091 and fails the job. Both files are
+# real, tracked siblings and are verified by hooks/tests/run-review-test.sh, so
+# the finding is a static-resolution artifact, not a defect.
+#
+# Disables are a last resort in this repo (see CLAUDE.md). Used here because the
+# directives that should have fixed it already exist and are insufficient, and
+# the alternatives are worse: `shellcheck -x` lives in the shared
+# smartwatermelon/github-workflows reusable workflow and would change behavior
+# for every consuming repo, and rewriting the source paths would alter a
+# load-bearing hook to satisfy a linter.
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib-review-issues.sh
+# shellcheck disable=SC1091  # sibling lib; unresolvable under CI checkout layout
 source "${_LIB_DIR}/lib-review-issues.sh"
 
 # --- Shared context-assembly library (file-header extraction, round memory) ---
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib-review-context.sh
+# shellcheck disable=SC1091  # sibling lib; unresolvable under CI checkout layout
 source "${_LIB_DIR}/lib-review-context.sh"
 
 # Resolve repo metadata for issue creation (best-effort)
