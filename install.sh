@@ -327,8 +327,11 @@ _filter_script="${REPO_DIR}/scripts/normalize-iterm-home.sh"
 # and never report "deployed tree already matches repo" (claude-config#344).
 _filter_current="$(git -C "${REPO_DIR}" config --get filter.iterm-home.clean 2>/dev/null || true)"
 _filter_smudge="$(git -C "${REPO_DIR}" config --get filter.iterm-home.smudge 2>/dev/null || true)"
+_filter_required="$(git -C "${REPO_DIR}" config --get filter.iterm-home.required 2>/dev/null || true)"
 _filter_ok=false
-if [[ "${_filter_current}" == "${_filter_script}" && "${_filter_smudge}" == "cat" ]]; then
+if [[ "${_filter_current}" == "${_filter_script}" &&
+  "${_filter_smudge}" == "cat" &&
+  "${_filter_required}" == "true" ]]; then
   _filter_ok=true
 fi
 
@@ -351,8 +354,15 @@ elif [[ "${DRY_RUN}" == true ]]; then
 else
   # smudge=cat: the working tree gets the committed content verbatim; iTerm2
   # rewrites it to an absolute path on its next launch.
+  #
+  # required=true matters more than it looks. Without it a missing or broken
+  # filter script makes git print an error, exit 0 anyway, and stage the
+  # UNFILTERED content -- silently committing this machine's absolute home
+  # directory, which is the exact bug this whole mechanism exists to prevent.
+  # With it, git exits 128 and stages nothing.
   if git -C "${REPO_DIR}" config filter.iterm-home.clean "${_filter_script}" &&
-    git -C "${REPO_DIR}" config filter.iterm-home.smudge cat; then
+    git -C "${REPO_DIR}" config filter.iterm-home.smudge cat &&
+    git -C "${REPO_DIR}" config filter.iterm-home.required true; then
     _ok "Configured git filter.iterm-home"
     installed+=("git-filter:iterm-home")
   else

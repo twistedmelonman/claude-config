@@ -41,6 +41,14 @@
 # .config/iterm2/, and hooks already written in "~/" form all pass through
 # unchanged. Input with no cc-status entry passes through byte-identical.
 #
+# JSON strings cannot contain raw newlines, so a "command" value is always on a
+# single line regardless of how the JSON is indented or wrapped. The pattern is
+# therefore safe against reformatting; it keys on the path, not the layout.
+#
+# install.sh sets filter.iterm-home.required=true. That is load-bearing: without
+# it, a missing or broken filter script makes git print an error, exit 0, and
+# stage the UNFILTERED content -- silently committing an absolute home directory.
+#
 # Reads stdin, writes stdout. Idempotent.
 
 set -euo pipefail
