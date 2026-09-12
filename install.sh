@@ -310,7 +310,95 @@ if [[ ${#_SUBMODULE_ROOTS[@]} -gt 0 ]]; then
 fi
 
 # ============================================================================
-# 7. POST-INSTALL SMOKE TESTS
+# 7. GIT CLEAN FILTER (iTerm2 cc-status home directory)
+# ============================================================================
+# iTerm2 rewrites settings.json's cc-status hook paths to this machine's
+# absolute home directory on every launch, which dirties the tracked file
+# differently on each host. .gitattributes maps settings.json to this filter,
+# but filter.*.clean is LOCAL config -- it does not arrive with a clone, so it
+# must be configured per machine here. Without it the filter silently no-ops
+# and the drift returns. See scripts/normalize-iterm-home.sh for the full
+# rationale.
+
+_filter_script="${REPO_DIR}/scripts/normalize-iterm-home.sh"
+
+# Already-correct config is NOT pending work: recording it in installed[] every
+# run would make `--sync --dry-run` permanently claim there are items to create
+# and never report "deployed tree already matches repo" (claude-config#344).
+_filter_current="$(git -C "${REPO_DIR}" config --get filter.iterm-home.clean 2>/dev/null || true)"
+_filter_smudge="$(git -C "${REPO_DIR}" config --get filter.iterm-home.smudge 2>/dev/null || true)"
+_filter_required="$(git -C "${REPO_DIR}" config --get filter.iterm-home.required 2>/dev/null || true)"
+_filter_ok=false
+if [[ "${_filter_current}" == "${_filter_script}" &&
+  "${_filter_smudge}" == "cat" &&
+  "${_filter_required}" == "true" ]]; then
+  _filter_ok=true
+fi
+
+if [[ ! -e "${_filter_script}" ]]; then
+  # Not an error: a checkout without the filter script simply does not use the
+  # iTerm2 normalization. Recording a failure here would make install.sh report
+  # issues on any repo that predates it (and on the bats fixture, which copies
+  # only install.sh into a throwaway repo).
+  _skip "No iTerm2 filter script — skipping git filter setup"
+elif [[ ! -x "${_filter_script}" ]]; then
+  _warn "Not executable: ${_filter_script}"
+  failures+=("filter-script-not-executable")
+elif ${_filter_ok}; then
+  _skip "git filter.iterm-home already configured"
+elif [[ "${DRY_RUN}" == true ]]; then
+  # Deliberately NOT added to would_install[]: that array is the deployed-tree
+  # symlink tally that --sync reports on, and local git config is neither a
+  # symlink nor part of the deployed tree.
+  _dry "Would configure git filter.iterm-home in ${REPO_DIR}"
+else
+  # smudge=cat: the working tree gets the committed content verbatim; iTerm2
+  # rewrites it to an absolute path on its next launch.
+  #
+  # required=true matters more than it looks. Without it a missing or broken
+  # filter script makes git print an error, exit 0 anyway, and stage the
+  # UNFILTERED content -- silently committing this machine's absolute home
+  # directory, which is the exact bug this whole mechanism exists to prevent.
+  # With it, git exits 128 and stages nothing.
+  if git -C "${REPO_DIR}" config filter.iterm-home.clean "${_filter_script}" &&
+    git -C "${REPO_DIR}" config filter.iterm-home.smudge cat &&
+    git -C "${REPO_DIR}" config filter.iterm-home.required true; then
+    _ok "Configured git filter.iterm-home"
+    installed+=("git-filter:iterm-home")
+  else
+    _err "Failed to configure git filter.iterm-home"
+    failures+=("git-filter:iterm-home")
+  fi
+
+  # Refresh the index stat entry for settings.json. The cleaned content is a
+  # different size than the working-tree file, so git's stat-cache fast path
+  # cannot short-circuit and `git status` reports a phantom " M" with no
+  # content diff. Re-staging the (unchanged) cleaned content updates the
+  # cached stat data and clears it for good.
+  #
+  # Guarded on the phantom signature: `git status` reports the file modified
+  # while `git diff --quiet` (which runs the clean filter) says the content is
+  # unchanged. Staging unconditionally would be a surprising side effect, and
+  # staging a REAL settings.json edit would hide the user's own pending change
+  # behind an already-staged file -- so a genuine edit (diff --quiet exits 1)
+  # is deliberately left alone.
+  _settings_status=""
+  if ! _settings_status="$(git -C "${REPO_DIR}" status --porcelain settings.json 2>/dev/null)"; then
+    _settings_status=""
+  fi
+  if [[ -e "${REPO_DIR}/settings.json" ]] &&
+    [[ -n "${_settings_status}" ]] &&
+    git -C "${REPO_DIR}" diff --quiet settings.json 2>/dev/null; then
+    if git -C "${REPO_DIR}" add settings.json 2>/dev/null; then
+      _ok "Cleared phantom index stat entry for settings.json"
+    else
+      _warn "Could not refresh index stat entry for settings.json"
+    fi
+  fi
+fi
+
+# ============================================================================
+# 8. POST-INSTALL SMOKE TESTS
 # ============================================================================
 
 _info "Running smoke tests..."
@@ -337,6 +425,31 @@ else
       failures+=("missing:${key_file}")
     fi
   done
+
+  # The iTerm2 clean filter must be wired up AND actually normalize. Checking
+  # only that the config key exists would pass even if the script were broken,
+  # so this feeds it a known-bad sample and confirms the home directory is
+  # stripped (Chesterton's fence: a filter that silently no-ops looks exactly
+  # like a working one until settings.json drifts on another machine).
+  if [[ ! -x "${_filter_script}" ]]; then
+    _skip "No iTerm2 filter script — skipping filter behavior check"
+  elif git -C "${REPO_DIR}" config --get filter.iterm-home.clean >/dev/null 2>&1; then
+    _filter_probe='"command" : "\/Users\/probeuser\/.config\/iterm2\/cc-status"'
+    _filter_want='"command" : "~\/.config\/iterm2\/cc-status"'
+    _filter_got=""
+    if ! _filter_got="$(printf '%s\n' "${_filter_probe}" | "${_filter_script}")"; then
+      _filter_got="<filter failed>"
+    fi
+    if [[ "${_filter_got}" == "${_filter_want}" ]]; then
+      _ok "Git filter normalizes iTerm2 cc-status paths"
+    else
+      _warn "Git filter did not normalize as expected"
+      failures+=("git-filter-behavior")
+    fi
+  else
+    _warn "Git filter filter.iterm-home.clean is not configured"
+    failures+=("git-filter-unconfigured")
+  fi
 
   # Hook scripts must be symlinks and executable
   for file in "${_TRACKED_FILES[@]}"; do
@@ -445,7 +558,7 @@ if ${SYNC_ONLY}; then
 fi
 
 # ============================================================================
-# 8. CLEAN UP DEPLOY-DIR GIT METADATA
+# 9. CLEAN UP DEPLOY-DIR GIT METADATA
 # ============================================================================
 # If ~/.claude was previously its own git clone, remove the repo metadata.
 # Tracked files are now symlinks — the git repo belongs in ~/Developer/claude-config.
