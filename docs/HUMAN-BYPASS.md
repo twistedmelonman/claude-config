@@ -86,6 +86,9 @@ The agent cannot merge PRs without your authorization:
 # From anywhere: name the repo explicitly (flag goes AFTER the subcommand)
 ~/.claude/hooks/merge-lock.sh authorize 123 "Reviewed and approved" --repo owner/name
 
+# Pick from a list instead of typing numbers
+~/.claude/hooks/merge-lock.sh tui "wave 3"
+
 # Check authorization status
 ~/.claude/hooks/merge-lock.sh status 123
 
@@ -135,6 +138,29 @@ third entry authorizes nothing rather than leaving the first two granted.
 
 If GitHub cannot be reached, the check warns and authorizes anyway. A network
 outage should not lock you out of merging.
+
+**Picking from a list.** Authorizing a wave means reading PR numbers off a
+screen and retyping them, which is where the typos come from. `tui` lists the
+open PRs you can actually merge and grants locks for the ones you select:
+
+```bash
+~/.claude/hooks/merge-lock.sh tui "wave 3"
+```
+
+It searches the `smartwatermelon`, `nightowlstudiollc`, and `twistedmelonman`
+owners, so PRs you opened against someone else's upstream repo are left out —
+a lock there would authorize a merge you cannot perform. Drafts, closed and
+merged PRs, and PRs that are blocked or conflicting are excluded too. A PR
+whose mergeability GitHub has not computed yet (common within seconds of a
+push) is listed with a `?` rather than hidden, so a PR you just pushed does not
+silently vanish from the list.
+
+Selection uses `fzf --multi` when it is installed — type to filter, Tab to
+mark, Enter to submit. Without `fzf` it falls back to a numbered list. The
+reason is an optional argument; it defaults to `bulk authorize`.
+
+Like `authorize`, `tui` is human-only and blocked for the agent: it grants
+locks through exactly the same path.
 
 **Workflow:**
 
