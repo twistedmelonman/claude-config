@@ -758,6 +758,116 @@ redeem_token() {
   echo -e "${GREEN}[merge-lock]${NC} Redeemed mobile token signed by '${principal}'"
 }
 
+# --- Bulk selection ----------------------------------------------------------
+
+# Owners whose PRs the operator can actually merge. Scoping the search this way
+# is what excludes PRs opened against upstream repos owned by someone else:
+# they would list as "mine" by author but grant a lock nobody can use.
+TUI_OWNERS=(smartwatermelon nightowlstudiollc twistedmelonman)
+TUI_SEARCH_LIMIT=200
+
+# Print one candidate per line as "OWNER/NAME#N<TAB>title".
+#
+# Mergeability is not a field on `gh search prs`, so each hit needs a second
+# per-PR lookup. Drafts are excluded by the search itself; merged and closed
+# PRs by --state open.
+tui_collect() {
+  local owner_args=()
+  local _owner
+  for _owner in "${TUI_OWNERS[@]}"; do
+    owner_args+=(--owner "${_owner}")
+  done
+
+  local search_json
+  if ! search_json=$(gh search prs --state=open --draft=false \
+    "${owner_args[@]}" --limit "${TUI_SEARCH_LIMIT}" \
+    --json number,title,repository </dev/null 2>/dev/null); then
+    echo "Error: could not search GitHub for open PRs." >&2
+    exit 1
+  fi
+
+  local lines
+  lines=$(printf '%s' "${search_json}" |
+    jq -r '.[] | "\(.repository.nameWithOwner)#\(.number)\t\(.title)"')
+  [[ -n "${lines}" ]] || return 0
+
+  local line token title repo pr state mergeable status
+  while IFS=$'\t' read -r token title; do
+    [[ -n "${token}" ]] || continue
+    repo="${token%%#*}"
+    pr="${token#*#}"
+    # </dev/null matters: without it this inherits the caller's stdin and
+    # swallows the selection the fallback picker is about to read.
+    if ! state=$(gh pr view "${pr}" --repo "${repo}" \
+      --json mergeable,mergeStateStatus </dev/null 2>/dev/null); then
+      # A PR that cannot be inspected cannot be judged mergeable. Skipping it
+      # is the safe direction: the operator can still authorize it by number.
+      continue
+    fi
+    mergeable=$(printf '%s' "${state}" | jq -r '.mergeable // "UNKNOWN"')
+    status=$(printf '%s' "${state}" | jq -r '.mergeStateStatus // "UNKNOWN"')
+
+    case "${mergeable}" in
+      MERGEABLE)
+        if [[ "${status}" == "BLOCKED" ]]; then
+          continue
+        fi
+        printf '%s\t%s\n' "${token}" "${title}"
+        ;;
+      UNKNOWN)
+        # GitHub computes mergeability lazily, so a PR pushed seconds ago
+        # reports UNKNOWN rather than a real answer. Marking it beats hiding
+        # it: the operator decides, and a stale lock costs nothing.
+        printf '%s\t? %s\n' "${token}" "${title}"
+        ;;
+      *)
+        # CONFLICTING and anything else GitHub adds later.
+        continue
+        ;;
+    esac
+  done <<<"${lines}"
+}
+
+# Take the candidate list as an argument and write the chosen OWNER/NAME#N
+# tokens on stdout, one per line.
+#
+# The candidates arrive as an argument rather than on stdin because the
+# fallback picker needs stdin for the operator's answer. Reading both from one
+# stream makes the list drain the selection along with itself, and the prompt
+# then sees EOF and reads as "cancel".
+tui_select() {
+  local candidate_block="$1"
+
+  if command -v fzf >/dev/null 2>&1; then
+    printf '%s\n' "${candidate_block}" |
+      fzf --multi --with-nth=1.. --prompt='authorize> ' |
+      while IFS=$'\t' read -r token _rest; do
+        [[ -n "${token}" ]] && printf '%s\n' "${token}"
+      done
+    return 0
+  fi
+
+  # Numbered fallback, so the subcommand still works where fzf is absent.
+  local candidates=()
+  local line
+  while IFS= read -r line; do
+    [[ -n "${line}" ]] && candidates+=("${line}")
+  done <<<"${candidate_block}"
+  local _i
+  for _i in "${!candidates[@]}"; do
+    printf '%3d) %s\n' "$((_i + 1))" "${candidates[${_i}]//$'\t'/  }" >&2
+  done
+  printf 'Select numbers (space separated), or blank to cancel: ' >&2
+  local picks
+  read -r picks || picks=""
+  local pick
+  for pick in ${picks}; do
+    [[ "${pick}" =~ ^[0-9]+$ ]] || continue
+    ((pick >= 1 && pick <= ${#candidates[@]})) || continue
+    printf '%s\n' "${candidates[$((pick - 1))]%%$'\t'*}"
+  done
+}
+
 # --- Dispatch ----------------------------------------------------------------
 
 SUBCOMMAND="${1:-help}"
@@ -783,6 +893,35 @@ case "${SUBCOMMAND}" in
     resolve_repo "${REPO_OVERRIDE}"
     TTL_SECONDS_RESOLVED=$(resolve_ttl "${TTL_OVERRIDE}")
     authorize_batch "${POSITIONAL[0]}" "${POSITIONAL[1]}" "${TTL_SECONDS_RESOLVED}"
+    ;;
+  tui)
+    # Every candidate token is repo-qualified, so no repo needs resolving —
+    # the cwd may not be a repo at all. The reason is an optional positional
+    # rather than a prompt: fzf consumes stdin, so a read here would need
+    # /dev/tty and would make the subcommand impossible to drive in a test.
+    _tui_reason="${POSITIONAL[0]:-bulk authorize}"
+    _tui_candidates=$(tui_collect)
+    if [[ -z "${_tui_candidates}" ]]; then
+      echo "No open, mergeable PRs found."
+      exit 0
+    fi
+    _tui_picked=$(tui_select "${_tui_candidates}")
+    if [[ -z "${_tui_picked}" ]]; then
+      echo "Nothing selected; no locks granted."
+      exit 0
+    fi
+    # Guard the join: a bare number reaching authorize_batch would resolve
+    # against an unset REPO. Every token from tui_collect is qualified, so an
+    # unqualified one means the pipeline is broken, not that the user typed it.
+    while IFS= read -r _tui_tok; do
+      [[ -z "${_tui_tok}" ]] && continue
+      if [[ "${_tui_tok}" != *"#"* ]]; then
+        echo "Error: unqualified selection '${_tui_tok}'" >&2
+        exit 1
+      fi
+    done <<<"${_tui_picked}"
+    _tui_joined=$(printf '%s\n' "${_tui_picked}" | paste -sd, -)
+    authorize_batch "${_tui_joined}" "${_tui_reason}"
     ;;
   check)
     if [[ -z "${POSITIONAL[0]:-}" ]]; then
@@ -831,13 +970,14 @@ case "${SUBCOMMAND}" in
     redeem_token "${POSITIONAL[0]}"
     ;;
   *)
-    echo "Usage: $0 {authorize|check|status|list|enroll|signers|redeem} [args...] [--repo OWNER/NAME] [--ttl MINUTES]"
+    echo "Usage: $0 {authorize|tui|check|status|list|enroll|signers|redeem} [args...] [--repo OWNER/NAME] [--ttl MINUTES]"
     echo ""
     echo "Commands:"
     echo "  authorize <pr[,pr...]> <reason>  - Create merge authorization(s)"
     echo "        --ttl MINUTES      - Lifetime, default 30, max $((MAX_TTL_SECONDS / 60))."
     echo "                             Use it for a sequential batch, so the last PR"
     echo "                             is still authorized when you reach it."
+    echo "  tui [reason]             - Pick open mergeable PRs from a list and authorize them"
     echo "  check <pr>               - Check if PR is authorized (exit 0/1)"
     echo "  status <pr>              - Show detailed authorization status"
     echo "  list                     - List all active authorizations"
