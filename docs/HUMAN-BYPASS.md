@@ -89,9 +89,26 @@ The agent cannot merge PRs without your authorization:
 # Check authorization status
 ~/.claude/hooks/merge-lock.sh status 123
 
-# List all active authorizations
+# List all active authorizations, with time remaining on each
 ~/.claude/hooks/merge-lock.sh list
 ```
+
+**Longer windows for a sequential batch.** A wave of PRs is authorized once
+but merged one at a time, so with the fixed 30-minute window the seventh PR
+expires because the first six were slow — and you get interrupted to
+re-authorize work you already approved. `--ttl` takes minutes, up to 8 hours:
+
+```bash
+~/.claude/hooks/merge-lock.sh authorize 92,93,94,95 "wave 3" --ttl 180
+```
+
+Each lock records its own lifetime, so changing the default later cannot
+retroactively shorten a lock you already granted. A value past the maximum is
+refused rather than quietly shortened: silently trimming the window would
+expire the batch mid-run, which is the failure the flag exists to prevent.
+`list` shows the time left on each lock, which is what you actually need
+mid-wave — it answers whether the last PR will still be authorized when you
+reach it.
 
 Locks are keyed on repo **and** PR number
 (`~/.claude/merge-locks/<owner>/<repo>/pr-<N>.lock`), so an authorization for

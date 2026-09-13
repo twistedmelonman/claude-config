@@ -23,7 +23,19 @@
 # 30-minute lock per PR and changes no part of the trust model: the hook
 # above still blocks the agent from running authorize at all, and every lock
 # stays keyed to its own repo. Note that all locks in one batch share a
-# timestamp, so 50 of them expire together 30 minutes after the command.
+# timestamp, so 50 of them expire together when the window elapses.
+#
+# Lock lifetime defaults to 30 minutes and is set per batch with --ttl, in
+# minutes, up to 8 hours (issue #501):
+#
+#   merge-lock.sh authorize 92,93,94 "wave 3" --ttl 180
+#
+# The flag exists because a sequential wave is authorized once but merged one
+# at a time: with a fixed 30-minute window, the seventh PR expires because the
+# first six were slow, and the human is interrupted to re-authorize work they
+# already approved. Each lock records its own TTL, so changing the default
+# later cannot retroactively shorten a lock already granted, and locks written
+# before TTL_SECONDS existed still read as 30 minutes.
 #
 # Mobile authorization (issue #509). When the human is away from the laptop,
 # `authorize` is unreachable: the Claude Code session runs on the laptop, and
@@ -48,7 +60,14 @@ set -euo pipefail
 unset CDPATH
 
 LOCK_DIR="${HOME}/.claude/merge-locks"
-LOCK_TTL_SECONDS=1800 # 30 minutes
+LOCK_TTL_SECONDS=1800 # 30 minutes, the default when --ttl is not given
+
+# Upper bound on --ttl (issue #501). A sequential wave of PRs can easily run
+# past 30 minutes, and the seventh should not expire because the first six
+# were slow. A ceiling still applies: an authorization is a standing
+# permission to merge without asking again, and one left open for days stops
+# meaning what the human meant when they granted it.
+MAX_TTL_SECONDS=28800 # 8 hours
 
 # Signed mobile-authorization tokens (issue #509).
 SIGNERS_FILE="${LOCK_DIR}/allowed_signers"
@@ -160,6 +179,7 @@ lock_path() {
 # --repo=VALUE anywhere among the trailing arguments.
 parse_args() {
   REPO_OVERRIDE=""
+  TTL_OVERRIDE=""
   POSITIONAL=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -175,6 +195,18 @@ parse_args() {
         REPO_OVERRIDE="${1#*=}"
         shift
         ;;
+      --ttl)
+        if [[ -z "${2:-}" ]]; then
+          echo "Error: --ttl requires a value in minutes" >&2
+          exit 1
+        fi
+        TTL_OVERRIDE="$2"
+        shift 2
+        ;;
+      --ttl=*)
+        TTL_OVERRIDE="${1#*=}"
+        shift
+        ;;
       *)
         POSITIONAL+=("$1")
         shift
@@ -183,17 +215,58 @@ parse_args() {
   done
 }
 
+# Convert a --ttl value in minutes to seconds, or exit with a usage error.
+resolve_ttl() {
+  local minutes="$1"
+  if [[ -z "${minutes}" ]]; then
+    echo "${LOCK_TTL_SECONDS}"
+    return 0
+  fi
+  if [[ ! "${minutes}" =~ ^[0-9]+$ ]] || [[ "${minutes}" -le 0 ]]; then
+    echo "Error: --ttl must be a positive whole number of minutes (got '${minutes}')" >&2
+    exit 1
+  fi
+  local seconds=$((minutes * 60))
+  # Refuse rather than clamp: silently shortening a window the human asked
+  # for would expire a batch mid-run, which is the failure this flag exists
+  # to prevent.
+  if [[ "${seconds}" -gt "${MAX_TTL_SECONDS}" ]]; then
+    echo "Error: --ttl ${minutes} exceeds the maximum of $((MAX_TTL_SECONDS / 60)) minutes" >&2
+    exit 1
+  fi
+  echo "${seconds}"
+}
+
+# A lock's own TTL, falling back to the default for locks written before
+# TTL_SECONDS was recorded. Without the fallback, every pre-existing lock
+# would read as TTL 0 and be purged on the next run.
+lock_ttl() {
+  local lock_file="$1"
+  local ttl
+  ttl=$(grep "^TTL_SECONDS=" "${lock_file}" | cut -d= -f2 || true)
+  if [[ "${ttl}" =~ ^[0-9]+$ ]] && [[ "${ttl}" -gt 0 ]]; then
+    echo "${ttl}"
+  else
+    echo "${LOCK_TTL_SECONDS}"
+  fi
+}
+
 # --- Lock operations ---------------------------------------------------------
 
 # The optional 4th argument names the repo to write the lock under; it
 # defaults to the resolved REPO. Batch authorization passes it per entry so a
 # cross-repo batch never has to mutate the global mid-loop — a set -e exit
 # partway through would otherwise leave REPO holding some entry's value.
+# The optional 5th argument is the lifetime in seconds; it defaults to the
+# 30-minute standard. It is written into the lock rather than read from the
+# global at check time, so changing the default later cannot retroactively
+# shorten or extend a lock the human already granted.
 create_merge_lock() {
   local pr_number="$1"
   local reason="$2"
   local ts="$3"
   local repo="${4:-${REPO}}"
+  local ttl="${5:-${LOCK_TTL_SECONDS}}"
   local lock_file
   lock_file=$(lock_path "${pr_number}" "${repo}")
 
@@ -206,11 +279,12 @@ create_merge_lock() {
     echo "REPO=${repo}"
     echo "AUTHORIZED_BY=${user}"
     echo "TIMESTAMP=${ts}"
+    echo "TTL_SECONDS=${ttl}"
     echo "REASON=${reason}"
   } >"${lock_file}"
 
   echo -e "${GREEN}[merge-lock]${NC} Authorization created for ${repo}#${pr_number}"
-  echo -e "${GREEN}[merge-lock]${NC} Valid for 30 minutes"
+  echo -e "${GREEN}[merge-lock]${NC} Valid for $((ttl / 60)) minutes"
   echo -e "${GREEN}[merge-lock]${NC} Lock file: ${lock_file}"
 }
 
@@ -254,7 +328,9 @@ purge_expired_locks() {
     [[ -z "${timestamp}" ]] && continue
 
     local age=$((now - timestamp))
-    if [[ ${age} -gt ${LOCK_TTL_SECONDS} ]]; then
+    local ttl
+    ttl=$(lock_ttl "${lock_file}")
+    if [[ ${age} -gt ${ttl} ]]; then
       local label
       label=$(lock_label "${lock_file}")
       rm -f "${lock_file}"
@@ -275,8 +351,10 @@ check_merge_lock() {
   local now
   now=$(date +%s)
   local age=$((now - timestamp))
+  local ttl
+  ttl=$(lock_ttl "${lock_file}")
 
-  if [[ ${age} -gt ${LOCK_TTL_SECONDS} ]]; then
+  if [[ ${age} -gt ${ttl} ]]; then
     rm -f "${lock_file}"
     return 1
   fi
@@ -294,7 +372,9 @@ show_status() {
     local now
     now=$(date +%s)
     local age=$((now - timestamp))
-    local remaining=$((LOCK_TTL_SECONDS - age))
+    local ttl
+    ttl=$(lock_ttl "${lock_file}")
+    local remaining=$((ttl - age))
 
     if [[ ${remaining} -gt 0 ]]; then
       local auth_by
@@ -320,16 +400,26 @@ show_status() {
 list_locks() {
   echo "=== Active Merge Authorizations ==="
   local found=false
-  local lock_file lock_files
+  local lock_file lock_files now
+  now=$(date +%s)
   lock_files=$(find_locks)
   while IFS= read -r lock_file; do
     [[ -z "${lock_file}" ]] && continue
     found=true
-    local label auth reason
+    local label auth reason timestamp ttl remaining
     label=$(lock_label "${lock_file}")
     auth=$(grep "^AUTHORIZED_BY=" "${lock_file}" | cut -d= -f2 || true)
     reason=$(grep "^REASON=" "${lock_file}" | cut -d= -f2- || true)
-    echo "  ${label} - by ${auth} - ${reason}"
+    # Remaining time is the thing you actually need when working a batch:
+    # it answers "will the last PR still be authorized when I reach it?"
+    timestamp=$(grep "^TIMESTAMP=" "${lock_file}" | cut -d= -f2 || true)
+    ttl=$(lock_ttl "${lock_file}")
+    if [[ "${timestamp}" =~ ^[0-9]+$ ]]; then
+      remaining=$(((ttl - (now - timestamp)) / 60))
+      echo "  ${label} - by ${auth} - ${reason} (${remaining}m left)"
+    else
+      echo "  ${label} - by ${auth} - ${reason}"
+    fi
   done <<<"${lock_files}"
   if [[ "${found}" == false ]]; then
     echo "  (none)"
@@ -339,6 +429,7 @@ list_locks() {
 authorize_batch() {
   local pr_arg="$1"
   local reason="$2"
+  local ttl="${3:-${LOCK_TTL_SECONDS}}"
 
   # Each list entry is either a bare PR number, which resolves against the
   # repo from --repo or the cwd, or a repo-qualified OWNER/NAME#N token. The
@@ -435,7 +526,7 @@ authorize_batch() {
   local _ts
   _ts=$(date +%s)
   for _i in "${!_pr_list[@]}"; do
-    create_merge_lock "${_pr_list[${_i}]}" "${reason}" "${_ts}" "${_repo_list[${_i}]}"
+    create_merge_lock "${_pr_list[${_i}]}" "${reason}" "${_ts}" "${_repo_list[${_i}]}" "${ttl}"
   done
 }
 
@@ -678,19 +769,20 @@ parse_args "$@"
 case "${SUBCOMMAND}" in
   authorize | auth)
     if [[ -z "${POSITIONAL[0]:-}" ]]; then
-      echo "Usage: $0 authorize <pr[,pr...]> <reason> [--repo OWNER/NAME]" >&2
+      echo "Usage: $0 authorize <pr[,pr...]> <reason> [--repo OWNER/NAME] [--ttl MINUTES]" >&2
       echo "       each pr is N (uses --repo/cwd) or OWNER/NAME#N" >&2
       exit 1
     fi
     if [[ -z "${POSITIONAL[1]:-}" ]]; then
       echo "Error: reason is required" >&2
-      echo "Usage: $0 authorize <pr[,pr...]> <reason> [--repo OWNER/NAME]" >&2
+      echo "Usage: $0 authorize <pr[,pr...]> <reason> [--repo OWNER/NAME] [--ttl MINUTES]" >&2
       echo "       each pr is N (uses --repo/cwd) or OWNER/NAME#N" >&2
       exit 1
     fi
 
     resolve_repo "${REPO_OVERRIDE}"
-    authorize_batch "${POSITIONAL[0]}" "${POSITIONAL[1]}"
+    TTL_SECONDS_RESOLVED=$(resolve_ttl "${TTL_OVERRIDE}")
+    authorize_batch "${POSITIONAL[0]}" "${POSITIONAL[1]}" "${TTL_SECONDS_RESOLVED}"
     ;;
   check)
     if [[ -z "${POSITIONAL[0]:-}" ]]; then
@@ -739,10 +831,13 @@ case "${SUBCOMMAND}" in
     redeem_token "${POSITIONAL[0]}"
     ;;
   *)
-    echo "Usage: $0 {authorize|check|status|list|enroll|signers|redeem} [args...] [--repo OWNER/NAME]"
+    echo "Usage: $0 {authorize|check|status|list|enroll|signers|redeem} [args...] [--repo OWNER/NAME] [--ttl MINUTES]"
     echo ""
     echo "Commands:"
-    echo "  authorize <pr[,pr...]> <reason>  - Create merge authorization(s) (30 min TTL)"
+    echo "  authorize <pr[,pr...]> <reason>  - Create merge authorization(s)"
+    echo "        --ttl MINUTES      - Lifetime, default 30, max $((MAX_TTL_SECONDS / 60))."
+    echo "                             Use it for a sequential batch, so the last PR"
+    echo "                             is still authorized when you reach it."
     echo "  check <pr>               - Check if PR is authorized (exit 0/1)"
     echo "  status <pr>              - Show detailed authorization status"
     echo "  list                     - List all active authorizations"
