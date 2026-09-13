@@ -21,12 +21,16 @@ unset CDPATH
 
 KEY_FILE="${MERGE_LOCK_KEY:-${HOME}/.ssh/merge_lock_phone}"
 SIG_NAMESPACE="merge-lock"
-MAX_MINUTES=1440 # must match TOKEN_MAX_LIFETIME_SECONDS in merge-lock.sh
+# Not locally authoritative. The laptop enforces the real ceiling via
+# TOKEN_MAX_LIFETIME_SECONDS in merge-lock.sh (86400 seconds = 24 hours); this
+# mirrors it only so an over-long request fails here instead of after a paste.
+# If that constant moves, this must move with it.
+SHARED_MAX_LIFETIME_MINUTES=1440 # 24 hours
 
 usage() {
   echo "Usage: $0 <owner/repo> <pr-number> [minutes]" >&2
   echo "" >&2
-  echo "  minutes defaults to 30, maximum ${MAX_MINUTES}." >&2
+  echo "  minutes defaults to 30, maximum ${SHARED_MAX_LIFETIME_MINUTES}." >&2
   echo "  Key file: ${KEY_FILE} (override with MERGE_LOCK_KEY)" >&2
   exit 1
 }
@@ -51,8 +55,8 @@ if [[ ! "${MINUTES}" =~ ^[0-9]+$ ]] || [[ "${MINUTES}" -le 0 ]]; then
 fi
 # Reject here rather than clamping: the laptop would refuse the token anyway,
 # and finding that out after pasting it is a wasted round trip.
-if [[ "${MINUTES}" -gt "${MAX_MINUTES}" ]]; then
-  echo "Error: ${MINUTES} minutes exceeds the ${MAX_MINUTES}-minute maximum." >&2
+if [[ "${MINUTES}" -gt "${SHARED_MAX_LIFETIME_MINUTES}" ]]; then
+  echo "Error: ${MINUTES} minutes exceeds the ${SHARED_MAX_LIFETIME_MINUTES}-minute maximum." >&2
   exit 1
 fi
 

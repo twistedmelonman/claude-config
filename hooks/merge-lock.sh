@@ -414,13 +414,15 @@ list_signers() {
   fi
   local principal key_type key_body fingerprint tmp_pub
   tmp_pub=$(mktemp)
+  # Trapped rather than removed at the end: under set -e a malformed line
+  # could exit the loop early and strand the file.
+  trap 'rm -f "${tmp_pub}"' RETURN
   while read -r principal key_type key_body _; do
     [[ -z "${principal}" ]] && continue
     printf '%s %s\n' "${key_type}" "${key_body}" >"${tmp_pub}"
     fingerprint=$(ssh-keygen -lf "${tmp_pub}" 2>/dev/null | awk '{print $2}' || true)
     echo "  ${principal} - ${key_type} - ${fingerprint:-unknown fingerprint}"
   done <"${SIGNERS_FILE}"
-  rm -f "${tmp_pub}"
 }
 
 # Consume a signed token and, if it verifies, create the lock it names.
@@ -460,28 +462,40 @@ redeem_token() {
 
   local sig_file
   sig_file=$(mktemp)
+  # ssh-keygen reads the signature from a file, never stdin, so the armor has
+  # to land on disk. Trapped so none of the exits below strand it.
+  trap 'rm -f "${sig_file}"' RETURN
   printf '%s\n' "${sig_armor}" >"${sig_file}"
 
-  # find-principals answers "which enrolled key signed this", so the verify
-  # step below never has to be told which identity to expect.
+  # Two ssh-keygen calls, not one, because they answer different questions and
+  # `verify` cannot do the first on its own:
+  #
+  #   find-principals - "does any enrolled key match this signature?" and,
+  #                     if so, under what name. Without it the caller would
+  #                     have to be told which identity to expect, which the
+  #                     token cannot be trusted to state about itself.
+  #   verify          - "is this signature genuinely that principal's, over
+  #                     this exact payload, in this namespace?"
+  #
+  # find-principals alone is not sufficient: it establishes that a signature
+  # traces to an enrolled key, and verify is what binds it to the payload.
   local principal
   if ! principal=$(printf '%s' "${payload}" |
     ssh-keygen -Y find-principals -s "${sig_file}" -f "${SIGNERS_FILE}" -n "${SIG_NAMESPACE}" 2>/dev/null); then
-    rm -f "${sig_file}"
     echo "Error: token signature does not match any enrolled key." >&2
     echo "Either the token was tampered with, or that phone's key is not enrolled." >&2
     exit 1
   fi
+  # One key may be enrolled under several principals; any of them verifying is
+  # enough, so take the first.
   principal=$(head -1 <<<"${principal}")
 
   if ! printf '%s' "${payload}" |
     ssh-keygen -Y verify -f "${SIGNERS_FILE}" -I "${principal}" \
       -n "${SIG_NAMESPACE}" -s "${sig_file}" >/dev/null 2>&1; then
-    rm -f "${sig_file}"
     echo "Error: token signature failed verification." >&2
     exit 1
   fi
-  rm -f "${sig_file}"
 
   # Only now is the payload trustworthy enough to parse.
   local version target expiry_field
