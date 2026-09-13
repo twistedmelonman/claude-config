@@ -100,6 +100,25 @@ script resolves the repo from the current directory via `gh repo view` and
 refuses to proceed if that fails. Pre-existing flat `pr-<N>.lock` files carry
 no repo and are purged on the next run; re-authorize if you hit one.
 
+`authorize` also confirms the PR actually exists in the repo it resolved, and
+refuses otherwise:
+
+```
+Error: acme/dev-env has no PR #305.
+The repo was resolved from the current directory (/Users/you/Developer/dev-env).
+If the PR is in another repo, pass --repo OWNER/NAME after the subcommand,
+or name it inline as OWNER/NAME#305.
+```
+
+Without that check, running `authorize 305` from the wrong checkout wrote a
+well-formed lock for a PR that does not exist, while the merge you meant to
+allow stayed blocked — and the two locks were indistinguishable in `list`.
+In a batch, every pair is checked before any lock is written, so a typo in the
+third entry authorizes nothing rather than leaving the first two granted.
+
+If GitHub cannot be reached, the check warns and authorizes anyway. A network
+outage should not lock you out of merging.
+
 **Workflow:**
 
 1. Agent completes PR and asks to merge

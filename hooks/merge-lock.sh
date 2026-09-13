@@ -88,6 +88,10 @@ resolve_repo() {
   local override="$1"
   if [[ -n "${override}" ]]; then
     REPO="${override}"
+    # Recorded so error messages can name the input the human supplied. When
+    # the repo came from the cwd, that input is a directory they never
+    # consciously passed, which is exactly what makes #471 hard to spot.
+    REPO_SOURCE="--repo"
   else
     REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null) || REPO=""
     if [[ -z "${REPO}" ]]; then
@@ -95,11 +99,54 @@ resolve_repo() {
       echo "Run from inside the repo checkout, or pass --repo OWNER/NAME after the subcommand." >&2
       exit 1
     fi
+    REPO_SOURCE="cwd"
   fi
   if ! validate_repo_slug "${REPO}"; then
     echo "Error: invalid repo '${REPO}' (expected OWNER/NAME)" >&2
     exit 1
   fi
+}
+
+# Explain where a repo slug came from, for error messages. The cwd case names
+# the directory: it is the input the human did not realize they were giving.
+repo_origin_note() {
+  local repo="$1"
+  if [[ "${repo}" == "${REPO:-}" && "${REPO_SOURCE:-}" == "cwd" ]]; then
+    echo "The repo was resolved from the current directory (${PWD})."
+  else
+    echo "The repo came from the authorize command line."
+  fi
+}
+
+# Confirm PR <n> exists in <repo>.
+#
+#   0 - the PR exists
+#   1 - the API answered, and there is no such PR
+#   2 - the API could not be reached, or said nothing usable
+#
+# The 2 case matters. This puts a network call on a path that previously made
+# none, so an outage or an expired token must not lock the human out of
+# authorizing a merge. Callers treat 2 as "warn and proceed", preserving the
+# old behavior, and hard-fail only on 1.
+#
+# Two calls rather than one, because `gh pr view` fails identically for "no
+# such PR" and "no such repo / cannot reach GitHub". Probing the repo first
+# separates them without parsing error text, which varies by gh version.
+pr_exists() {
+  local pr="$1"
+  local repo="$2"
+
+  if ! gh repo view "${repo}" --json nameWithOwner >/dev/null 2>&1; then
+    # Either the repo is gone or the API is unreachable; both are
+    # indistinguishable here and both are "cannot say", not "does not exist".
+    return 2
+  fi
+  if gh pr view "${pr}" --repo "${repo}" --json number >/dev/null 2>&1; then
+    return 0
+  fi
+  # The repo resolved a moment ago, so the API is reachable and this is a
+  # genuine "no such PR" rather than an outage.
+  return 1
 }
 
 # Optional 2nd argument overrides the repo, for callers handling several in
@@ -345,10 +392,48 @@ authorize_batch() {
     _repo_list+=("${_entry_repo}")
   done
 
+  # Confirm every pair exists before writing any lock (issue #471).
+  #
+  # Syntactic validation above cannot catch the real failure: a well-formed
+  # repo and a well-formed PR number that simply do not belong together. That
+  # happens when the cwd is a different checkout than the PR, and every step
+  # succeeds while the composite answer is wrong. The lock is then correctly
+  # keyed, correctly formatted, and authorizes nothing — surfacing much later
+  # as a merge refusal whose stated cause is true but unhelpful.
+  #
+  # Runs as its own pass, before any write, so a bad entry at position 40 of
+  # 50 authorizes nothing rather than leaving 39 granted.
+  local _unreachable=false
+  local _i
+  for _i in "${!_pr_list[@]}"; do
+    local _check_pr="${_pr_list[${_i}]}" _check_repo="${_repo_list[${_i}]}"
+    local _rc=0
+    pr_exists "${_check_pr}" "${_check_repo}" || _rc=$?
+    case "${_rc}" in
+      0) ;;
+      1)
+        local _origin
+        _origin=$(repo_origin_note "${_check_repo}")
+        echo "Error: ${_check_repo} has no PR #${_check_pr}." >&2
+        echo "${_origin}" >&2
+        echo "If the PR is in another repo, pass --repo OWNER/NAME after the subcommand," >&2
+        echo "or name it inline as OWNER/NAME#${_check_pr}." >&2
+        exit 1
+        ;;
+      *)
+        # Degrade to the pre-#471 behavior rather than blocking a merge on a
+        # network problem. Warn once, not once per entry in a 50-PR batch.
+        if [[ "${_unreachable}" == false ]]; then
+          echo -e "${YELLOW}[merge-lock]${NC} Could not reach GitHub to confirm the PR exists; authorizing anyway." >&2
+          _unreachable=true
+        fi
+        ;;
+    esac
+  done
+
   # Shared timestamp so all TTLs align.
   local _ts
   _ts=$(date +%s)
-  local _i
   for _i in "${!_pr_list[@]}"; do
     create_merge_lock "${_pr_list[${_i}]}" "${reason}" "${_ts}" "${_repo_list[${_i}]}"
   done
