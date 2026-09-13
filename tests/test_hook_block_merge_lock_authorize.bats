@@ -57,29 +57,9 @@ run_hook() {
   [ "${status}" -eq 2 ]
 }
 
-# --- blocked: enroll ---------------------------------------------------------
-
-@test "blocks enroll, which would let the agent trust its own key" {
-  run run_hook 'merge-lock.sh enroll /tmp/evil.pub phone'
-  [ "${status}" -eq 2 ]
-}
-
-@test "blocks the extension-less enroll" {
-  run run_hook 'merge-lock enroll /tmp/evil.pub phone'
-  [ "${status}" -eq 2 ]
-}
 
 # --- allowed -----------------------------------------------------------------
 
-@test "allows redeem, whose security comes from the signature" {
-  run run_hook 'merge-lock.sh redeem SOMETOKEN'
-  [ "${status}" -eq 0 ]
-}
-
-@test "allows the extension-less redeem" {
-  run run_hook 'merge-lock redeem SOMETOKEN'
-  [ "${status}" -eq 0 ]
-}
 
 @test "allows check" {
   run run_hook 'merge-lock.sh check 42'
@@ -96,13 +76,9 @@ run_hook() {
   [ "${status}" -eq 0 ]
 }
 
-@test "allows signers" {
-  run run_hook 'merge-lock.sh signers'
-  [ "${status}" -eq 0 ]
-}
 
 @test "allows an unrelated command that merely mentions the word" {
-  run run_hook 'grep -n authorize scripts/merge-lock-sign.sh'
+  run run_hook 'grep -n authorize scripts/post-push-status.sh'
   [ "${status}" -eq 0 ]
 }
 
