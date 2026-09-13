@@ -24,11 +24,39 @@
 # above still blocks the agent from running authorize at all, and every lock
 # stays keyed to its own repo. Note that all locks in one batch share a
 # timestamp, so 50 of them expire together 30 minutes after the command.
+#
+# Mobile authorization (issue #509). When the human is away from the laptop,
+# `authorize` is unreachable: the Claude Code session runs on the laptop, and
+# the phone cannot drive its shell. `redeem` closes that gap without weakening
+# the trust model:
+#
+#   merge-lock.sh enroll <pubkey-file> <principal>   # human-only, one time
+#   merge-lock.sh redeem <token>                     # agent may run this
+#
+# The phone holds an ed25519 private key and signs a payload naming exactly
+# one repo, one PR, and an expiry. The laptop holds only the public key. The
+# agent is a courier: it can pass a token along, but it cannot manufacture
+# one, because it has no private key. That is why `redeem` is deliberately
+# NOT blocked by the PreToolUse hook while `authorize` and `enroll` are — the
+# signature is the security boundary, not the hook.
+#
+# The allowed-signers file lives inside LOCK_DIR on purpose, with no env
+# override. Any trick that redirects it (e.g. a fake HOME) redirects the lock
+# output to the same fake tree, so the forged lock lands somewhere the real
+# merge check never reads.
 set -euo pipefail
 unset CDPATH
 
 LOCK_DIR="${HOME}/.claude/merge-locks"
 LOCK_TTL_SECONDS=1800 # 30 minutes
+
+# Signed mobile-authorization tokens (issue #509).
+SIGNERS_FILE="${LOCK_DIR}/allowed_signers"
+SIG_NAMESPACE="merge-lock"
+# Upper bound on how far ahead a token may claim to expire. A signed token is
+# a bearer credential until it expires; capping the window limits the damage
+# from one that leaks, without forcing the human to re-sign mid-errand.
+TOKEN_MAX_LIFETIME_SECONDS=86400 # 24 hours
 
 mkdir -p "${LOCK_DIR}"
 
@@ -326,6 +354,220 @@ authorize_batch() {
   done
 }
 
+# --- Mobile authorization (issue #509) ---------------------------------------
+
+# Register a phone's public key under a principal name. Human-only, like
+# authorize: enrolling a key the agent generated would hand it the power to
+# mint its own authorizations, which is the one thing this whole file exists
+# to prevent.
+enroll_signer() {
+  local pubkey_file="$1"
+  local principal="$2"
+
+  if [[ ! -f "${pubkey_file}" ]]; then
+    echo "Error: no such public key file: ${pubkey_file}" >&2
+    exit 1
+  fi
+  # The principal becomes a field in allowed_signers, which is whitespace
+  # separated; a value containing spaces would silently shift every later
+  # column and change which key the entry actually trusts.
+  if [[ ! "${principal}" =~ ^[A-Za-z0-9_.@-]+$ ]]; then
+    echo "Error: invalid principal '${principal}' (letters, digits, . _ - @ only)" >&2
+    exit 1
+  fi
+
+  local key_line
+  key_line=$(tr -d '\r' <"${pubkey_file}" | grep -E '^(ssh|sk-ssh|ecdsa|sk-ecdsa)' | head -1 || true)
+  if [[ -z "${key_line}" ]]; then
+    echo "Error: ${pubkey_file} does not look like an SSH public key" >&2
+    echo "Expected a line beginning with ssh-ed25519, ssh-rsa, or similar." >&2
+    exit 1
+  fi
+
+  # Key type and base64 body only: a trailing comment is free-text and would
+  # be compared as part of the duplicate check below.
+  local key_type key_body
+  key_type=$(awk '{print $1}' <<<"${key_line}")
+  key_body=$(awk '{print $2}' <<<"${key_line}")
+  if [[ -z "${key_body}" ]]; then
+    echo "Error: malformed public key in ${pubkey_file}" >&2
+    exit 1
+  fi
+
+  touch "${SIGNERS_FILE}"
+  chmod 600 "${SIGNERS_FILE}"
+  if grep -qF " ${key_type} ${key_body}" "${SIGNERS_FILE}"; then
+    echo -e "${YELLOW}[merge-lock]${NC} That key is already enrolled; nothing to do."
+    return 0
+  fi
+
+  printf '%s %s %s\n' "${principal}" "${key_type}" "${key_body}" >>"${SIGNERS_FILE}"
+  echo -e "${GREEN}[merge-lock]${NC} Enrolled '${principal}' for mobile authorization"
+  echo -e "${GREEN}[merge-lock]${NC} Signers file: ${SIGNERS_FILE}"
+}
+
+list_signers() {
+  echo "=== Enrolled Mobile Signers ==="
+  if [[ ! -s "${SIGNERS_FILE}" ]]; then
+    echo "  (none)"
+    return 0
+  fi
+  local principal key_type key_body fingerprint tmp_pub
+  tmp_pub=$(mktemp)
+  while read -r principal key_type key_body _; do
+    [[ -z "${principal}" ]] && continue
+    printf '%s %s\n' "${key_type}" "${key_body}" >"${tmp_pub}"
+    fingerprint=$(ssh-keygen -lf "${tmp_pub}" 2>/dev/null | awk '{print $2}' || true)
+    echo "  ${principal} - ${key_type} - ${fingerprint:-unknown fingerprint}"
+  done <"${SIGNERS_FILE}"
+  rm -f "${tmp_pub}"
+}
+
+# Consume a signed token and, if it verifies, create the lock it names.
+#
+# Token layout, base64 of:
+#   <payload line>\n<ssh signature armor>
+# where the payload is exactly:
+#   v1 OWNER/REPO#N exp=<unix seconds>
+#
+# Everything that matters is inside the signed payload: repo, PR, and expiry.
+# Nothing about the token is trusted before `ssh-keygen -Y verify` succeeds.
+redeem_token() {
+  local token="$1"
+
+  if [[ ! -s "${SIGNERS_FILE}" ]]; then
+    echo "Error: no mobile signers are enrolled." >&2
+    echo "On the laptop, run: merge-lock.sh enroll <pubkey-file> <principal>" >&2
+    exit 1
+  fi
+
+  local decoded
+  # Tokens are pasted through chat clients that love to insert newlines.
+  token=$(tr -d '[:space:]' <<<"${token}")
+  if ! decoded=$(printf '%s' "${token}" | base64 -d 2>/dev/null); then
+    echo "Error: token is not valid base64." >&2
+    exit 1
+  fi
+
+  local payload
+  payload=$(head -1 <<<"${decoded}")
+  local sig_armor
+  sig_armor=$(tail -n +2 <<<"${decoded}")
+  if [[ -z "${payload}" || -z "${sig_armor}" ]]; then
+    echo "Error: malformed token (expected a payload line and a signature)." >&2
+    exit 1
+  fi
+
+  local sig_file
+  sig_file=$(mktemp)
+  printf '%s\n' "${sig_armor}" >"${sig_file}"
+
+  # find-principals answers "which enrolled key signed this", so the verify
+  # step below never has to be told which identity to expect.
+  local principal
+  if ! principal=$(printf '%s' "${payload}" |
+    ssh-keygen -Y find-principals -s "${sig_file}" -f "${SIGNERS_FILE}" -n "${SIG_NAMESPACE}" 2>/dev/null); then
+    rm -f "${sig_file}"
+    echo "Error: token signature does not match any enrolled key." >&2
+    echo "Either the token was tampered with, or that phone's key is not enrolled." >&2
+    exit 1
+  fi
+  principal=$(head -1 <<<"${principal}")
+
+  if ! printf '%s' "${payload}" |
+    ssh-keygen -Y verify -f "${SIGNERS_FILE}" -I "${principal}" \
+      -n "${SIG_NAMESPACE}" -s "${sig_file}" >/dev/null 2>&1; then
+    rm -f "${sig_file}"
+    echo "Error: token signature failed verification." >&2
+    exit 1
+  fi
+  rm -f "${sig_file}"
+
+  # Only now is the payload trustworthy enough to parse.
+  local version target expiry_field
+  read -r version target expiry_field _ <<<"${payload}"
+  if [[ "${version}" != "v1" ]]; then
+    echo "Error: unsupported token version '${version}' (this build understands v1)." >&2
+    exit 1
+  fi
+  if [[ "${target}" != *"#"* ]]; then
+    echo "Error: malformed token target '${target}' (expected OWNER/REPO#N)." >&2
+    exit 1
+  fi
+
+  local token_repo token_pr
+  token_repo="${target%%#*}"
+  token_pr="${target#*#}"
+  if ! validate_repo_slug "${token_repo}"; then
+    echo "Error: token names an invalid repo '${token_repo}'." >&2
+    exit 1
+  fi
+  if [[ ! "${token_pr}" =~ ^[0-9]+$ ]] || [[ "${token_pr}" -le 0 ]]; then
+    echo "Error: token names an invalid PR number '${token_pr}'." >&2
+    exit 1
+  fi
+
+  if [[ "${expiry_field}" != exp=* ]]; then
+    echo "Error: token is missing its expiry field." >&2
+    exit 1
+  fi
+  local expiry="${expiry_field#exp=}"
+  if [[ ! "${expiry}" =~ ^[0-9]+$ ]]; then
+    echo "Error: token has a malformed expiry '${expiry}'." >&2
+    exit 1
+  fi
+
+  local now
+  now=$(date +%s)
+  if [[ "${expiry}" -le "${now}" ]]; then
+    echo "Error: token expired $(((now - expiry) / 60)) minute(s) ago." >&2
+    echo "Sign a fresh one on the phone." >&2
+    exit 1
+  fi
+  # A signature is valid forever, so a token claiming a far-future expiry
+  # would be a permanent merge credential. Reject rather than silently clamp:
+  # the human should see that the signing step asked for too long a window.
+  if [[ $((expiry - now)) -gt "${TOKEN_MAX_LIFETIME_SECONDS}" ]]; then
+    echo "Error: token lifetime exceeds the ${TOKEN_MAX_LIFETIME_SECONDS}s maximum." >&2
+    exit 1
+  fi
+
+  # Replay guard. The token stays valid until its own expiry, which may be
+  # far longer than a lock's TTL; without this, one token could silently
+  # re-authorize the same PR again after its lock had expired.
+  local replay_dir="${LOCK_DIR}/.redeemed"
+  mkdir -p "${replay_dir}"
+  local token_id
+  token_id=$(printf '%s' "${payload}" | shasum -a 256 | awk '{print $1}')
+  local replay_marker="${replay_dir}/${token_id}"
+  if [[ -f "${replay_marker}" ]]; then
+    echo "Error: this token has already been redeemed." >&2
+    echo "Each signed token authorizes one merge. Sign a fresh one on the phone." >&2
+    exit 1
+  fi
+
+  local ts
+  ts=$(date +%s)
+  create_merge_lock "${token_pr}" "mobile authorization by ${principal}" "${ts}" "${token_repo}"
+
+  # Record the redemption only after the lock exists, so a failure to write
+  # the lock does not burn the token.
+  printf 'PAYLOAD=%s\nREDEEMED_AT=%s\nPRINCIPAL=%s\n' "${payload}" "${ts}" "${principal}" >"${replay_marker}"
+
+  # Markers are only needed while the token could still be replayed, so drop
+  # any whose payload expiry has passed.
+  local marker marker_exp
+  for marker in "${replay_dir}"/*; do
+    [[ -f "${marker}" ]] || continue
+    marker_exp=$(grep "^PAYLOAD=" "${marker}" | sed -n 's/.*exp=\([0-9]*\).*/\1/p' || true)
+    if [[ -n "${marker_exp}" ]] && [[ "${marker_exp}" -le "${now}" ]]; then
+      rm -f "${marker}"
+    fi
+  done
+
+  echo -e "${GREEN}[merge-lock]${NC} Redeemed mobile token signed by '${principal}'"
+}
+
 # --- Dispatch ----------------------------------------------------------------
 
 SUBCOMMAND="${1:-help}"
@@ -379,14 +621,37 @@ case "${SUBCOMMAND}" in
     purge_expired_locks
     list_locks
     ;;
+  enroll)
+    if [[ -z "${POSITIONAL[0]:-}" || -z "${POSITIONAL[1]:-}" ]]; then
+      echo "Usage: $0 enroll <pubkey-file> <principal>" >&2
+      exit 1
+    fi
+    enroll_signer "${POSITIONAL[0]}" "${POSITIONAL[1]}"
+    ;;
+  signers)
+    list_signers
+    ;;
+  redeem)
+    if [[ -z "${POSITIONAL[0]:-}" ]]; then
+      echo "Usage: $0 redeem <token>" >&2
+      exit 1
+    fi
+    purge_expired_locks
+    redeem_token "${POSITIONAL[0]}"
+    ;;
   *)
-    echo "Usage: $0 {authorize|check|status|list} [args...] [--repo OWNER/NAME]"
+    echo "Usage: $0 {authorize|check|status|list|enroll|signers|redeem} [args...] [--repo OWNER/NAME]"
     echo ""
     echo "Commands:"
     echo "  authorize <pr[,pr...]> <reason>  - Create merge authorization(s) (30 min TTL)"
     echo "  check <pr>               - Check if PR is authorized (exit 0/1)"
     echo "  status <pr>              - Show detailed authorization status"
     echo "  list                     - List all active authorizations"
+    echo ""
+    echo "Mobile authorization (when you are away from the laptop):"
+    echo "  enroll <pubkey> <name>   - Trust a phone's public key (human-only, one time)"
+    echo "  signers                  - List enrolled mobile signers"
+    echo "  redeem <token>           - Consume a phone-signed token and create the lock"
     echo ""
     echo "Locks are keyed on repo + PR number. The repo comes from --repo OWNER/NAME"
     echo "(after the subcommand) or from 'gh repo view' in the current directory."
