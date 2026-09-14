@@ -70,10 +70,60 @@ setup() {
   [ "${output}" = '"command": "/Users/probeuser/nested/deeper/.config/iterm2/cc-status"' ]
 }
 
-@test "input with no cc-status entry passes through byte-identical" {
-  run bash -c "printf '%s\n' '{\"model\": \"opus\", \"env\": {\"A\": \"1\"}}' | '${FILTER}'"
+@test "input with no cc-status entry is canonicalized but semantically unchanged" {
+  # Byte-identical passthrough was the old contract, before this filter
+  # canonicalized formatting. Now the bytes are expected to change; what must
+  # not change is the parsed content.
+  printf '%s\n' '{"model": "opus", "env": {"A": "1"}}' >"${BATS_TEST_TMPDIR}/plain.json"
+  run "${FILTER}" <"${BATS_TEST_TMPDIR}/plain.json"
   [ "${status}" -eq 0 ]
-  [ "${output}" = '{"model": "opus", "env": {"A": "1"}}' ]
+  [ "$(printf '%s\n' "${output}" | jq -S -c .)" = '{"env":{"A":"1"},"model":"opus"}' ]
+}
+
+@test "canonicalizes key order, so writer style produces no diff" {
+  a="$(printf '{"b":2,"a":1}' | "${FILTER}")"
+  b="$(printf '{"a":1,"b":2}' | "${FILTER}")"
+  [ "${a}" = "${b}" ]
+}
+
+@test "canonicalization survives the two real writer styles" {
+  # iTerm2 style (sorted, " : ", escaped slashes) and Claude Code style
+  # (insertion order, ": ", bare slashes) must land on identical bytes.
+  printf '%s\n' '{"z" : "\/tmp\/x", "a" : 1}' >"${BATS_TEST_TMPDIR}/iterm.json"
+  printf '%s\n' '{"a": 1, "z": "/tmp/x"}' >"${BATS_TEST_TMPDIR}/cc.json"
+  a="$("${FILTER}" <"${BATS_TEST_TMPDIR}/iterm.json")"
+  b="$("${FILTER}" <"${BATS_TEST_TMPDIR}/cc.json")"
+  [ "${a}" = "${b}" ]
+}
+
+@test "canonical output ends with exactly one newline" {
+  run bash -c "printf '{\"a\":1}' | '${FILTER}' | xxd | tail -1"
+  [[ "${output}" == *"0a"* ]]
+}
+
+@test "invalid JSON passes through unchanged rather than staging an empty file" {
+  printf '%s' '{"a": 1, BROKEN' >"${BATS_TEST_TMPDIR}/bad.json"
+  run "${FILTER}" <"${BATS_TEST_TMPDIR}/bad.json"
+  [ "${status}" -eq 0 ]
+  [ "${output}" = '{"a": 1, BROKEN' ]
+}
+
+@test "path rewriting still works when jq is unavailable" {
+  # jq missing must not disable the #507 guarantee.
+  run env PATH="/usr/bin:/bin" bash -c "printf '%s\n' '\"command\": \"/Users/probeuser/.config/iterm2/cc-status\"' | '${FILTER}'"
+  [ "${status}" -eq 0 ]
+  [ "${output}" = '"command": "~/.config/iterm2/cc-status"' ]
+}
+
+@test "canonicalization and path rewriting compose" {
+  printf '%s\n' '{"z":1,"cmd":"/Users/probeuser/.config/iterm2/cc-status"}' \
+    >"${BATS_TEST_TMPDIR}/both.json"
+  run "${FILTER}" <"${BATS_TEST_TMPDIR}/both.json"
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *'"cmd": "~/.config/iterm2/cc-status"'* ]]
+  # jq -S sorts: "cmd" must precede "z"
+  [[ "$(printf '%s\n' "${output}" | grep -n '"cmd"' | cut -d: -f1)" -lt \
+     "$(printf '%s\n' "${output}" | grep -n '"z"' | cut -d: -f1)" ]]
 }
 
 @test "every cc-status entry in a multi-hook file is normalized" {

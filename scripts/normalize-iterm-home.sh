@@ -1,8 +1,22 @@
 #!/usr/bin/env bash
 
 # ~/Developer/claude-config/scripts/normalize-iterm-home.sh
-# Git clean filter: strip the per-machine home directory out of settings.json's
-# iTerm2 cc-status hook paths before they reach the git index.
+# Git clean filter for settings.json. Does two things on the way into the index:
+#   1. canonicalizes the JSON formatting (jq -S .)
+#   2. strips the per-machine home directory out of the iTerm2 cc-status paths
+#
+# THE FORMATTING WAR
+# ------------------
+# Two programs write settings.json and disagree about style. iTerm2 writes via
+# NSJSONSerialization: sorted keys, " : " separators, escaped "\/". Claude Code
+# writes insertion order, ": ", bare "/". Neither is wrong and neither will
+# yield, so whichever wrote last reformatted the entire document -- a two-line
+# change arrived as ~390 lines of churn that buried the real edit.
+#
+# Rather than pick a winner, normalize on the way into the index. The canonical
+# committed form is "whatever the last writer produced, run through jq". Both
+# keep their own style in the working tree, neither has any reason to rewrite
+# anything, and git sees one stable format.
 #
 # WHY THIS EXISTS
 # ---------------
@@ -70,6 +84,32 @@
 
 set -euo pipefail
 
-sed -E \
+# Canonicalize first, then rewrite paths.
+#
+# jq -S . settles the formatting war: whatever either writer produced becomes
+# one sorted, 2-space-indented document, so a two-line change reads as two
+# lines instead of ~390 lines of reordering. It also unescapes "\/" to "/",
+# which is why it must run BEFORE the sed pass -- after jq, only the
+# bare-slash rule can match. The escaped rule is kept so the filter still
+# behaves correctly when run by hand on a JSON fragment.
+#
+# If jq is missing or the input is not valid JSON, fall back to passing the
+# bytes through unchanged rather than staging an empty file. The path rewrite
+# still runs, so the #507 guarantee holds even without jq.
+canonicalize() {
+  if command -v jq >/dev/null 2>&1; then
+    local input canonical
+    input="$(cat)"
+    if canonical="$(printf '%s' "${input}" | jq -S . 2>/dev/null)"; then
+      printf '%s\n' "${canonical}"
+    else
+      printf '%s' "${input}"
+    fi
+  else
+    cat
+  fi
+}
+
+canonicalize | sed -E \
   -e 's#\\/Users\\/[^\\"/]+\\/\.config\\/iterm2\\/cc-status#~\\/.config\\/iterm2\\/cc-status#g' \
   -e 's#/Users/[^\\"/]+/\.config/iterm2/cc-status#~/.config/iterm2/cc-status#g'

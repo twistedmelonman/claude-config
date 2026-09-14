@@ -1,189 +1,18 @@
 {
-  "env": {
-    "BASH_DEFAULT_TIMEOUT_MS": "300000",
-    "BASH_ENV": "~/.config/bash/functions.sh",
-    "CLAUDE_CODE_SHELL": "/opt/homebrew/bin/bash",
-    "CLAUDE_CODE_THRIFTY_SONIC": "0"
-  },
+  "advisorModel": "fable",
+  "agentPushNotifEnabled": true,
+  "alwaysThinkingEnabled": false,
   "attribution": {
     "commit": "",
     "pr": ""
   },
-  "includeCoAuthoredBy": false,
-  "permissions": {},
-  "model": "opus[1m]",
-  "hooks": {
-    "Notification": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/.config/iterm2/cc-status"
-          }
-        ]
-      }
-    ],
-    "PermissionRequest": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/.config/iterm2/cc-status"
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/.config/iterm2/cc-status"
-          }
-        ]
-      }
-    ],
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/.claude/scripts/hook-block-all.sh"
-          }
-        ]
-      },
-      {
-        "matcher": "Write",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/.claude/scripts/hook-block-merge-locks-write.sh"
-          }
-        ]
-      },
-      {
-        "matcher": "Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/.claude/scripts/hook-block-merge-locks-write.sh"
-          }
-        ]
-      },
-      {
-        "matcher": "EnterWorktree",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/.claude/scripts/hook-block-enter-worktree.sh"
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/.config/iterm2/cc-status"
-          }
-        ]
-      }
-    ],
-    "SessionEnd": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/.config/iterm2/cc-status"
-          }
-        ]
-      }
-    ],
-    "SessionStart": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/.claude/scripts/hook-session-start.sh"
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/.config/iterm2/cc-status"
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/.claude/scripts/hook-budget-guard.sh"
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/.config/iterm2/cc-status"
-          }
-        ]
-      }
-    ],
-    "StopFailure": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/.config/iterm2/cc-status"
-          }
-        ]
-      }
-    ],
-    "SubagentStop": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/.claude/scripts/hook-budget-guard.sh"
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/.config/iterm2/cc-status"
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/.config/iterm2/cc-status"
-          }
-        ]
-      }
-    ]
-  },
-  "workflowKeywordTriggerEnabled": false,
-  "statusLine": {
-    "type": "command",
-    "command": "~/.claude/scripts/status-line.sh"
-  },
+  "autoCompactWindow": 400000,
+  "autoContinueAtUsageLimit": true,
+  "editorMode": "normal",
+  "effortLevel": "medium",
   "enabledPlugins": {
     "apple-notes@apple-notes-mcp": false,
+    "asana@claude-plugins-official": true,
     "backend-development@claude-code-workflows": false,
     "ci-workflows@smartwatermelon-marketplace": true,
     "code-critic@smartwatermelon-marketplace": true,
@@ -203,18 +32,23 @@
     "pr-review@pr-review": true,
     "react-native-3d@smartwatermelon-marketplace": false,
     "security-compliance@claude-code-workflows": false,
+    "slack@claude-plugins-official": true,
     "superpowers@superpowers-marketplace": true,
     "tdd-workflows@claude-code-workflows": false,
     "team-collaboration@claude-code-workflows": false,
-    "unit-testing@claude-code-workflows": false,
-    "slack@claude-plugins-official": true,
-    "asana@claude-plugins-official": true
+    "unit-testing@claude-code-workflows": false
+  },
+  "env": {
+    "BASH_DEFAULT_TIMEOUT_MS": "300000",
+    "BASH_ENV": "~/.config/bash/functions.sh",
+    "CLAUDE_CODE_SHELL": "/opt/homebrew/bin/bash",
+    "CLAUDE_CODE_THRIFTY_SONIC": "0"
   },
   "extraKnownMarketplaces": {
     "apple-notes-mcp": {
       "source": {
-        "source": "github",
-        "repo": "sweetrb/apple-notes-mcp"
+        "repo": "sweetrb/apple-notes-mcp",
+        "source": "github"
       }
     },
     "claude-code-workflows": {
@@ -225,8 +59,8 @@
     },
     "claude-plugins-official": {
       "source": {
-        "source": "github",
-        "repo": "anthropics/claude-plugins-official"
+        "repo": "anthropics/claude-plugins-official",
+        "source": "github"
       }
     },
     "dumbify": {
@@ -237,23 +71,23 @@
     },
     "i-have-adhd": {
       "source": {
-        "source": "github",
-        "repo": "ayghri/i-have-adhd"
+        "repo": "ayghri/i-have-adhd",
+        "source": "github"
       }
     },
     "personify": {
+      "autoUpdate": true,
       "source": {
-        "source": "github",
-        "repo": "smartwatermelon/personify"
-      },
-      "autoUpdate": true
+        "repo": "smartwatermelon/personify",
+        "source": "github"
+      }
     },
     "pr-review": {
+      "autoUpdate": true,
       "source": {
-        "source": "github",
-        "repo": "smartwatermelon/pr-review"
-      },
-      "autoUpdate": true
+        "repo": "smartwatermelon/pr-review",
+        "source": "github"
+      }
     },
     "smartwatermelon-marketplace": {
       "source": {
@@ -263,6 +97,183 @@
     }
   },
   "feedbackDrafts": "off",
+  "gitAttribution": true,
+  "hooks": {
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "command": "~/.config/iterm2/cc-status",
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "command": "~/.config/iterm2/cc-status",
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "~/.config/iterm2/cc-status",
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "~/.claude/scripts/hook-block-all.sh",
+            "type": "command"
+          }
+        ],
+        "matcher": "Bash"
+      },
+      {
+        "hooks": [
+          {
+            "command": "~/.claude/scripts/hook-block-merge-locks-write.sh",
+            "type": "command"
+          }
+        ],
+        "matcher": "Write"
+      },
+      {
+        "hooks": [
+          {
+            "command": "~/.claude/scripts/hook-block-merge-locks-write.sh",
+            "type": "command"
+          }
+        ],
+        "matcher": "Edit"
+      },
+      {
+        "hooks": [
+          {
+            "command": "~/.claude/scripts/hook-block-enter-worktree.sh",
+            "type": "command"
+          }
+        ],
+        "matcher": "EnterWorktree"
+      },
+      {
+        "hooks": [
+          {
+            "command": "~/.config/iterm2/cc-status",
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "command": "~/.config/iterm2/cc-status",
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "~/.claude/scripts/hook-session-start.sh",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      },
+      {
+        "hooks": [
+          {
+            "command": "~/.config/iterm2/cc-status",
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "command": "~/.claude/scripts/hook-budget-guard.sh",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      },
+      {
+        "hooks": [
+          {
+            "command": "~/.config/iterm2/cc-status",
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "command": "~/.config/iterm2/cc-status",
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "command": "~/.claude/scripts/hook-budget-guard.sh",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      },
+      {
+        "hooks": [
+          {
+            "command": "~/.config/iterm2/cc-status",
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "command": "~/.config/iterm2/cc-status",
+            "type": "command"
+          }
+        ]
+      }
+    ]
+  },
+  "includeCoAuthoredBy": false,
+  "inputNeededNotifEnabled": true,
+  "model": "opus[1m]",
+  "modelSettings": {
+    "claude-opus-5": {
+      "effortLevel": "medium"
+    }
+  },
+  "permissions": {},
+  "remoteControlAtStartup": true,
+  "skipDangerousModePermissionPrompt": true,
   "spinnerTipsOverride": {
     "excludeDefault": false,
     "tips": [
@@ -270,24 +281,13 @@
       "Use the /copy command to copy Claude's output with no hard line-breaks or injected characters"
     ]
   },
-  "alwaysThinkingEnabled": false,
-  "effortLevel": "medium",
-  "modelSettings": {
-    "claude-opus-5": {
-      "effortLevel": "medium"
-    }
+  "statusLine": {
+    "command": "~/.claude/scripts/status-line.sh",
+    "type": "command"
   },
-  "autoCompactWindow": 400000,
-  "advisorModel": "fable",
-  "tui": "fullscreen",
-  "skipDangerousModePermissionPrompt": true,
   "theme": "dark",
-  "editorMode": "normal",
-  "verbose": false,
-  "autoContinueAtUsageLimit": true,
-  "remoteControlAtStartup": true,
-  "inputNeededNotifEnabled": true,
-  "agentPushNotifEnabled": true,
+  "tui": "fullscreen",
   "useAutoModeDuringPlan": false,
-  "gitAttribution": true
+  "verbose": false,
+  "workflowKeywordTriggerEnabled": false
 }
