@@ -36,6 +36,17 @@ lock_file() {
   echo "${TMP_HOME}/.claude/merge-locks/acme/widgets/pr-$1.lock"
 }
 
+# Edit a file in place without `sed -i`, whose argument handling differs
+# between BSD/macOS (`-i ''`) and GNU/Linux (`-i`). Writing through a temp file
+# is portable to both (claude-config#515).
+sed_inplace() {
+  local expr="$1" file="$2"
+  local tmp
+  tmp="$(mktemp)"
+  sed "${expr}" "${file}" >"${tmp}"
+  mv "${tmp}" "${file}"
+}
+
 # Backdate a lock so expiry can be tested without waiting.
 age_lock() {
   local pr="$1" seconds="$2"
@@ -44,7 +55,7 @@ age_lock() {
   local ts
   ts=$(grep "^TIMESTAMP=" "${f}" | cut -d= -f2)
   local backdated=$((ts - seconds))
-  sed -i '' "s/^TIMESTAMP=.*/TIMESTAMP=${backdated}/" "${f}"
+  sed_inplace "s/^TIMESTAMP=.*/TIMESTAMP=${backdated}/" "${f}"
 }
 
 # --- defaults ----------------------------------------------------------------
@@ -183,7 +194,7 @@ age_lock() {
   # Locks written before this field existed must keep working, rather than
   # reading as TTL 0 and being purged on the next run.
   bash "${SCRIPT}" auth 100 "ok"
-  sed -i '' '/^TTL_SECONDS=/d' "$(lock_file 100)"
+  sed_inplace '/^TTL_SECONDS=/d' "$(lock_file 100)"
   age_lock 100 1700
   run bash "${SCRIPT}" check 100
   [ "${status}" -eq 0 ]
@@ -191,7 +202,7 @@ age_lock() {
 
 @test "a lock without TTL_SECONDS still expires at 30 minutes" {
   bash "${SCRIPT}" auth 100 "ok"
-  sed -i '' '/^TTL_SECONDS=/d' "$(lock_file 100)"
+  sed_inplace '/^TTL_SECONDS=/d' "$(lock_file 100)"
   age_lock 100 1900
   run bash "${SCRIPT}" check 100
   [ "${status}" -ne 0 ]
@@ -199,7 +210,7 @@ age_lock() {
 
 @test "a lock with a malformed TTL_SECONDS falls back rather than failing" {
   bash "${SCRIPT}" auth 100 "ok"
-  sed -i '' 's/^TTL_SECONDS=.*/TTL_SECONDS=garbage/' "$(lock_file 100)"
+  sed_inplace 's/^TTL_SECONDS=.*/TTL_SECONDS=garbage/' "$(lock_file 100)"
   age_lock 100 1700
   run bash "${SCRIPT}" check 100
   [ "${status}" -eq 0 ]
@@ -221,6 +232,39 @@ age_lock() {
   run bash "${SCRIPT}" list
   [ "${status}" -eq 0 ]
   [ ! -f "$(lock_file 100)" ]
+}
+
+@test "a lock in its last minute lists as <1m, not as 0m left" {
+  # Expiry is `age > ttl` everywhere, so a lock aged exactly to its TTL is
+  # still valid and check accepts it. Truncating its remaining time to
+  # "0m left" read as expired for a lock that still works (claude-config#515).
+  #
+  # Aim 30s inside the window rather than exactly at the boundary. Setting
+  # age == ttl races the clock: if a second ticks between `date` here and the
+  # `list` below, age becomes ttl+1 and the lock is purged instead of listed.
+  # Anything under 60s remaining exercises the same truncation path, without
+  # depending on when the second boundary falls.
+  bash "${SCRIPT}" auth 100 "ok"
+  local now
+  now=$(date +%s)
+  sed_inplace "s/^TIMESTAMP=.*/TIMESTAMP=$((now - 1770))/" "$(lock_file 100)"
+  run bash "${SCRIPT}" list
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *"<1m left"* ]]
+  [[ "${output}" != *"0m left"* ]]
+
+  # The listing and check must agree that the lock is still usable.
+  run bash "${SCRIPT}" check 100
+  [ "${status}" -eq 0 ]
+}
+
+@test "a live lock still lists its remaining minutes" {
+  bash "${SCRIPT}" auth 100 "ok" --ttl 60
+  age_lock 100 1800
+  run bash "${SCRIPT}" list
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *"m left"* ]]
+  [[ "${output}" != *"(expired)"* ]]
 }
 
 @test "status reports remaining time against the lock's own TTL" {

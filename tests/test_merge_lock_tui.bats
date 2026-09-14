@@ -104,6 +104,17 @@ STUB
   chmod +x "${TMP_HOME}/bin/fzf"
 }
 
+# Install an fzf stub that exits non-zero without printing, the way fzf does
+# when the operator presses Escape or Ctrl-C.
+stub_fzf_cancelled() {
+  cat >"${TMP_HOME}/bin/fzf" <<'STUB'
+#!/usr/bin/env bash
+cat >/dev/null
+exit 130
+STUB
+  chmod +x "${TMP_HOME}/bin/fzf"
+}
+
 # Remove fzf from PATH entirely, to exercise the numbered fallback.
 hide_fzf() {
   mkdir -p "${TMP_HOME}/only"
@@ -123,6 +134,21 @@ lock_file() {
   FZF_PICK="acme/widgets#10" run bash "${SCRIPT}" tui "wave 3"
   [ "${status}" -eq 0 ]
   [ -f "$(lock_file 'acme/widgets#10')" ]
+}
+
+@test "cancelling fzf grants nothing and exits cleanly" {
+  # fzf exits 130 on Escape/Ctrl-C. merge-lock.sh runs under `set -euo
+  # pipefail`, so this path depends on tui_select's explicit `return 0`
+  # discarding the pipeline status. A refactor dropping that return would
+  # abort the script here instead of reporting nothing selected
+  # (claude-config#516).
+  stub_fzf_cancelled
+  run bash "${SCRIPT}" tui "wave 3"
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *"Nothing selected"* ]]
+  [ ! -f "$(lock_file 'acme/widgets#10')" ]
+  [ ! -f "$(lock_file 'acme/widgets#11')" ]
+  [ ! -f "$(lock_file 'other/gadgets#7')" ]
 }
 
 @test "tui does not grant a lock for an unselected PR" {

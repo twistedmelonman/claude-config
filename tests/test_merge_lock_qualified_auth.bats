@@ -6,6 +6,15 @@
 SCRIPT="${BATS_TEST_DIRNAME}/../hooks/merge-lock.sh"
 
 setup() {
+  # The real gh is an exported shell function, and it shadows the PATH stub
+  # below unless both it and BASH_ENV are cleared. Without this, every call
+  # fails on the wrapper's identity check instead of reaching the stub
+  # (claude-config#514, #477).
+  unset BASH_ENV
+  unset CDPATH
+  unset -f gh 2>/dev/null || true
+  export -n gh 2>/dev/null || true
+
   TMP_HOME="$(mktemp -d)"
   readonly TMP_HOME
   export HOME="${TMP_HOME}"
