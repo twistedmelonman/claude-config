@@ -13,7 +13,6 @@ This document explains how YOU (the human operator) can bypass the hardened revi
 | Skip local pre-push review | `STRICT_PREPUSH=0 git push` (human-run; agent must ask permission first) |
 | Commit to main (emergency) | `git commit --no-verify -m "message"` (on main branch) |
 | Authorize PR merge | `~/.claude/hooks/merge-lock.sh authorize <PR#> "reason"` |
-| Authorize PR merge from your phone | `~/.claude/scripts/merge-lock-sign.sh <owner/repo> <PR#>`, then have the agent redeem the token |
 | View blocked attempts | `~/.claude/scripts/blocked-audit.sh` |
 
 ---
@@ -168,62 +167,6 @@ locks through exactly the same path.
 2. You review the PR on GitHub
 3. You run the authorize command
 4. You tell the agent to proceed with merge
-
-#### Authorizing from your phone
-
-When you are on Claude mobile, the session still runs on the laptop and you
-cannot reach its shell, so `authorize` is out of reach. Merging in the GitHub
-app instead skips the whole pre-merge pipeline — review, CI gating, the lot.
-
-Signed tokens close that gap. Your phone holds a private key; the laptop holds
-only the public half. You sign a token that names one repo, one PR and an
-expiry, paste it into the chat, and the agent redeems it. The agent can carry a
-token but cannot manufacture one, so the merge still runs through the normal
-process.
-
-**One-time setup.** On the phone (or wherever you will sign):
-
-```bash
-ssh-keygen -t ed25519 -f ~/.ssh/merge_lock_phone -C merge-lock-phone
-```
-
-Copy the **public** half to the laptop, then enroll it there. Enrolling is
-human-only, blocked for the agent for the same reason `authorize` is:
-
-```bash
-~/.claude/hooks/merge-lock.sh enroll ~/.ssh/merge_lock_phone.pub phone
-~/.claude/hooks/merge-lock.sh signers   # confirm the fingerprint
-```
-
-**Each time you want to authorize a merge:**
-
-```bash
-# On the phone. Default window is 30 minutes; maximum is 24 hours.
-~/.claude/scripts/merge-lock-sign.sh smartwatermelon/claude-config 123
-~/.claude/scripts/merge-lock-sign.sh smartwatermelon/claude-config 123 120
-```
-
-Paste the token into the chat and tell the agent to redeem it. The agent runs:
-
-```bash
-~/.claude/hooks/merge-lock.sh redeem <token>
-```
-
-That creates a normal 30-minute lock, indistinguishable from one `authorize`
-would have written except that its reason records which signer produced it.
-
-**What the token does and does not permit.** It authorizes exactly the repo and
-PR it names, it expires on its own schedule regardless of the lock TTL, and it
-works once — a redeemed token is recorded and refused on a second attempt.
-A token for one PR can never be replayed against another.
-
-Any tool that can produce an OpenSSH signature over a payload
-(`ssh-keygen -Y sign -n merge-lock`) will work in place of the script. Several
-iOS and Android SSH clients advertise this; verify that a given app produces a
-signature the laptop accepts before you rely on it away from your desk.
-
-**Zero-setup alternative.** If you can SSH into the laptop from the phone, just
-run `authorize` there directly. Signed tokens exist for when you cannot.
 
 ### 5. Viewing Blocked Attempts
 
