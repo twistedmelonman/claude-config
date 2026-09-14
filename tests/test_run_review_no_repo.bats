@@ -35,10 +35,15 @@ teardown() {
 # Helper: feed a well-formed diff on stdin from outside any repo. The diff is
 # non-empty so an early "no staged changes" exit cannot be mistaken for the
 # behavior under test.
+#
+# stderr is folded into stdout explicitly. Bats 1.14 already merges it into
+# ${output}, but that is a default the suite should not depend on: the refusal
+# message under test is written to stderr, so if a future bats separates the
+# streams the message assertion would pass vacuously rather than fail loudly.
 run_outside_repo() {
   cd "${NOTAREPO}" || exit
   printf 'diff --git a/foo.js b/foo.js\nindex 0000000..1234567 100644\n--- a/foo.js\n+++ b/foo.js\n@@ -0,0 +1 @@\n+const x = 1;\n' \
-    | bash "${SCRIPT}"
+    | bash "${SCRIPT}" 2>&1
 }
 
 @test "exits non-zero when not inside a git repository" {
