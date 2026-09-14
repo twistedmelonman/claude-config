@@ -29,10 +29,22 @@
 #
 # ESCAPING
 # --------
-# settings.json is NSJSONSerialization output, so forward slashes arrive
-# backslash-escaped. The literal bytes are:
+# Two writers touch settings.json, and they escape differently:
+#
+#   iTerm2 (NSJSONSerialization) escapes forward slashes. Literal bytes:
 #     \/Users\/arich\/.config\/iterm2\/cc-status
-# The pattern therefore matches \/ pairs, not bare slashes.
+#
+#   Claude Code's own settings writer does not. Literal bytes:
+#     /Users/arich/.config/iterm2/cc-status
+#
+# Both forms must be matched. An earlier version of this filter handled only
+# the escaped form, so whenever Claude Code rewrote settings.json -- enabling a
+# plugin, changing a model -- the filter silently no-opped and the absolute
+# home directory reached the index. filter.*.required does not catch that: the
+# script still exits 0, it just has nothing to do.
+#
+# Two sed expressions rather than one with a backreference, because -E
+# backreference support differs between BSD and GNU sed.
 #
 # SCOPE
 # -----
@@ -43,7 +55,12 @@
 #
 # JSON strings cannot contain raw newlines, so a "command" value is always on a
 # single line regardless of how the JSON is indented or wrapped. The pattern is
-# therefore safe against reformatting; it keys on the path, not the layout.
+# therefore safe against indentation and wrapping; it keys on the path, not the
+# layout. It is NOT automatically safe against a serializer that escapes
+# differently -- that is why both escaping forms are spelled out above.
+#
+# The username character class excludes "/" so it cannot span a path component
+# and swallow a longer, unrelated path that happens to end in the same tail.
 #
 # install.sh sets filter.iterm-home.required=true. That is load-bearing: without
 # it, a missing or broken filter script makes git print an error, exit 0, and
@@ -53,4 +70,6 @@
 
 set -euo pipefail
 
-sed -E 's#\\/Users\\/[^\\"]+\\/\.config\\/iterm2\\/cc-status#~\\/.config\\/iterm2\\/cc-status#g'
+sed -E \
+  -e 's#\\/Users\\/[^\\"/]+\\/\.config\\/iterm2\\/cc-status#~\\/.config\\/iterm2\\/cc-status#g' \
+  -e 's#/Users/[^\\"/]+/\.config/iterm2/cc-status#~/.config/iterm2/cc-status#g'
