@@ -434,13 +434,24 @@ else
   if [[ ! -x "${_filter_script}" ]]; then
     _skip "No iTerm2 filter script — skipping filter behavior check"
   elif git -C "${REPO_DIR}" config --get filter.iterm-home.clean >/dev/null 2>&1; then
-    _filter_probe='"command" : "\/Users\/probeuser\/.config\/iterm2\/cc-status"'
-    _filter_want='"command" : "~\/.config\/iterm2\/cc-status"'
-    _filter_got=""
-    if ! _filter_got="$(printf '%s\n' "${_filter_probe}" | "${_filter_script}")"; then
-      _filter_got="<filter failed>"
-    fi
-    if [[ "${_filter_got}" == "${_filter_want}" ]]; then
+    # Both serializers must be covered: iTerm2 escapes forward slashes, Claude
+    # Code's settings writer does not. Probing only the escaped form passes
+    # while the filter is blind to everything Claude Code writes.
+    _filter_ok=1
+    for _filter_case in \
+      '"command" : "\/Users\/probeuser\/.config\/iterm2\/cc-status"|"command" : "~\/.config\/iterm2\/cc-status"' \
+      '"command": "/Users/probeuser/.config/iterm2/cc-status"|"command": "~/.config/iterm2/cc-status"'; do
+      _filter_probe="${_filter_case%%|*}"
+      _filter_want="${_filter_case##*|}"
+      _filter_got=""
+      if ! _filter_got="$(printf '%s\n' "${_filter_probe}" | "${_filter_script}")"; then
+        _filter_got="<filter failed>"
+      fi
+      if [[ "${_filter_got}" != "${_filter_want}" ]]; then
+        _filter_ok=0
+      fi
+    done
+    if [[ "${_filter_ok}" -eq 1 ]]; then
       _ok "Git filter normalizes iTerm2 cc-status paths"
     else
       _warn "Git filter did not normalize as expected"
