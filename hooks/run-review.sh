@@ -1848,7 +1848,17 @@ DIFF=$(cat)
 # repos, making cross-repo contamination undetectable (incident 2026-03-08).
 # Per-repo log + identity fields let the controller confirm the log matches
 # the repo and commit they just made.
-GIT_DIR_PATH="$(git rev-parse --git-dir 2>/dev/null || echo ".git")"
+# A literal ".git" fallback here creates a real .git/ DIRECTORY on first write
+# in whatever directory the review was launched from (claude-config#519). The
+# result looks like a repo to any `[ -d .git ]` check while git itself rejects
+# it, and a later real `git init` silently inherits the stale artifacts. There
+# is also nothing to review outside a repo, so refuse rather than invent a path.
+if ! GIT_DIR_PATH="$(git rev-parse --git-dir 2>/dev/null)"; then
+  _review_cwd=$(pwd -L || echo "unknown")
+  echo "run-review.sh: not inside a git repository; nothing to review." >&2
+  echo "  cwd: ${_review_cwd}" >&2
+  exit 1
+fi
 REVIEW_LOG="${REVIEW_LOG:-${GIT_DIR_PATH}/last-review-result.log}"
 # Sibling of REVIEW_LOG: the append-only record of code-reviewer /
 # adversarial-reviewer disagreements and how the arbiter resolved each one.
