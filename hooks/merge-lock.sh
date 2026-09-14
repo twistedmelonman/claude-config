@@ -389,8 +389,21 @@ list_locks() {
     timestamp=$(grep "^TIMESTAMP=" "${lock_file}" | cut -d= -f2 || true)
     ttl=$(lock_ttl "${lock_file}")
     if [[ "${timestamp}" =~ ^[0-9]+$ ]]; then
-      remaining=$(((ttl - (now - timestamp)) / 60))
-      echo "  ${label} - by ${auth} - ${reason} (${remaining}m left)"
+      # Expiry is `age > ttl`, matching purge_expired_locks and
+      # check_merge_lock, so a lock aged exactly to its TTL is still valid.
+      # Report sub-minute time left as "<1m" rather than truncating to "0m",
+      # which reads as expired for a lock check would still accept
+      # (claude-config#515). A lock that is genuinely past its window can
+      # reach here only when listed without a purge, so label it rather than
+      # printing a negative.
+      remaining=$((ttl - (now - timestamp)))
+      if [[ ${remaining} -lt 0 ]]; then
+        echo "  ${label} - by ${auth} - ${reason} (expired)"
+      elif [[ ${remaining} -lt 60 ]]; then
+        echo "  ${label} - by ${auth} - ${reason} (<1m left)"
+      else
+        echo "  ${label} - by ${auth} - ${reason} ($((remaining / 60))m left)"
+      fi
     else
       echo "  ${label} - by ${auth} - ${reason}"
     fi

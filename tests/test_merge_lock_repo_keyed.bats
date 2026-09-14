@@ -10,22 +10,65 @@
 SCRIPT="${BATS_TEST_DIRNAME}/../hooks/merge-lock.sh"
 
 setup() {
+  # The real gh is an exported shell function, and it shadows the PATH stub
+  # below unless both it and BASH_ENV are cleared. Without this, every call
+  # fails on the wrapper's identity check instead of reaching the stub
+  # (claude-config#514, #477).
+  unset BASH_ENV
+  unset CDPATH
+  unset -f gh 2>/dev/null || true
+  export -n gh 2>/dev/null || true
+
   TMP_HOME="$(mktemp -d)"
   readonly TMP_HOME
   export HOME="${TMP_HOME}"
 
-  # gh stub: `gh repo view --json nameWithOwner -q .nameWithOwner` answers
-  # with ${STUB_REPO}. Empty STUB_REPO simulates "not inside a repo".
+  # gh stub, answering the three call shapes merge-lock.sh actually makes:
+  #
+  #   gh repo view --json nameWithOwner -q .nameWithOwner  -> cwd resolution
+  #   gh repo view <repo> --json nameWithOwner             -> pr_exists step 1
+  #   gh pr view <pr> --repo <repo> --json number          -> pr_exists step 2
+  #
+  # Empty STUB_REPO simulates "not inside a repo".
+  #
+  # PR existence matters because authorize calls pr_exists() (#471) and
+  # refuses a PR that does not exist. A stub that cannot answer the pr view
+  # call makes pr_exists return 2 ("cannot say"), which degrades open and
+  # authorizes anyway — so these tests would pass even if the existence
+  # check were deleted outright. MISSING_PRS lists "repo#number" records
+  # that should report as absent; anything else exists.
   MOCK_BIN="${TMP_HOME}/bin"
   mkdir -p "${MOCK_BIN}"
   cat >"${MOCK_BIN}/gh" <<'EOF'
 #!/usr/bin/env bash
 if [[ "$1" == "repo" && "$2" == "view" ]]; then
+  # Qualified form (`gh repo view OWNER/NAME ...`) is pr_exists' reachability
+  # probe: any repo resolves, so "cannot say" never fires in these tests.
+  if [[ -n "${3:-}" && "${3}" != --* ]]; then
+    echo "$3"
+    exit 0
+  fi
   if [[ -z "${STUB_REPO:-}" ]]; then
     echo "none of the git remotes configured for this repository point to a known GitHub host" >&2
     exit 1
   fi
   echo "${STUB_REPO}"
+  exit 0
+fi
+if [[ "$1" == "pr" && "$2" == "view" ]]; then
+  _pr="$3"
+  _repo=""
+  while [[ $# -gt 0 ]]; do
+    if [[ "$1" == "--repo" ]]; then
+      _repo="$2"
+      break
+    fi
+    shift
+  done
+  for _absent in ${MISSING_PRS:-}; do
+    [[ "${_absent}" == "${_repo}#${_pr}" ]] && exit 1
+  done
+  printf '{"number":%s}\n' "${_pr}"
   exit 0
 fi
 echo "unexpected gh call: $*" >&2
@@ -34,6 +77,7 @@ EOF
   chmod +x "${MOCK_BIN}/gh"
   export PATH="${MOCK_BIN}:${PATH}"
   export STUB_REPO="acme/widgets"
+  export MISSING_PRS=""
 }
 
 teardown() {
@@ -114,6 +158,36 @@ write_legacy_flat_lock() {
   [ "${status}" -eq 0 ]
   [ -f "$(lock_file other/place 1)" ]
   [ -f "$(lock_file other/place 2)" ]
+}
+
+# ── PR existence (#471) ──────────────────────────────────────────────────────
+#
+# These are the tests that fail if the existence check is removed. Before the
+# stub answered `gh pr view`, pr_exists() returned 2 ("cannot say") for every
+# call, merge-lock degraded open with "authorizing anyway", and every test in
+# this file passed whether or not the check existed at all (#514).
+
+@test "authorize refuses a PR that does not exist in the target repo" {
+  MISSING_PRS="other/place#9" run bash "${SCRIPT}" authorize 9 "ok" --repo other/place
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"no PR #9"* ]]
+  [ ! -f "$(lock_file other/place 9)" ]
+}
+
+@test "a batch is refused whole when one of its PRs does not exist" {
+  MISSING_PRS="other/place#9" run bash "${SCRIPT}" authorize 8,9 "ok" --repo other/place
+  [ "${status}" -ne 0 ]
+  [ ! -f "$(lock_file other/place 8)" ]
+  [ ! -f "$(lock_file other/place 9)" ]
+}
+
+@test "existence is checked against the target repo, not the cwd repo" {
+  # PR 3 exists in acme/widgets (the cwd repo) but not in other/place. The
+  # check must follow --repo, or a lock gets written for a PR that is absent
+  # from the repo it names.
+  MISSING_PRS="other/place#3" run bash "${SCRIPT}" authorize 3 "ok" --repo other/place
+  [ "${status}" -ne 0 ]
+  [ ! -f "$(lock_file other/place 3)" ]
 }
 
 # ── Repo resolution failures ─────────────────────────────────────────────────
