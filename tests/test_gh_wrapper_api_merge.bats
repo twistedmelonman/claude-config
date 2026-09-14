@@ -15,6 +15,18 @@
 FUNCTIONS_SH="${HOME}/.config/bash/functions.sh"
 
 setup() {
+  # GH_TOKEN must be unset for the whole test file. The wrapper refuses to run
+  # whenever GH_TOKEN is set and it cannot resolve that token to a login
+  # (the GH_TOKEN identity gate); resolution calls a real `gh api user`, which the
+  # PATH stub below answers with a bare `exit 0`. The refusal then fires
+  # before any test reaches the api-merge blocking logic under test. The
+  # wrapper prescribes this remedy directly: "If it is a test stub, unset
+  # GH_TOKEN for the test so this check is skipped."
+  #
+  # Same cause and same fix as test_gh_wrapper.bats and
+  # test_gh_binary_wrapper.bats; see the fuller note in the former.
+  unset GH_TOKEN
+
   # The wrapper's review-script location is an exported override
   # (_gh_wrapper_review_script). If the developer's interactive shell exported
   # it -- and sourcing gh-wrapper.sh does exactly that -- bats inherits the
@@ -57,6 +69,18 @@ _load_gh_fn() {
   export HOME="${MOCK_HOME}"
   local func_def
   func_def=$(sed -n '/^gh()/,/^export -f gh$/p' "${FUNCTIONS_SH}")
+
+  # Fail loudly on a zero-line extraction (#477, suggested fix 3). See the
+  # fuller note in test_gh_wrapper.bats: `eval ""` is a no-op, so a range that
+  # matches nothing leaves the inherited real wrapper in scope and these tests
+  # silently assert against the ambient environment instead of the function
+  # they name. A false PASS is worse than a failure.
+  if [[ -z "${func_def//[[:space:]]/}" ]]; then
+    echo "FATAL: extracted no gh() definition from ${FUNCTIONS_SH}" >&2
+    echo "       The sed range no longer matches; see #477 fix 2." >&2
+    return 1
+  fi
+
   eval "${func_def}"
 }
 

@@ -17,6 +17,19 @@
 GH_WRAPPER="${HOME}/.local/bin/gh"
 
 setup() {
+  # GH_TOKEN must be unset for the whole test file. The wrapper refuses to run
+  # whenever GH_TOKEN is set and it cannot resolve that token to a login
+  # (the GH_TOKEN identity gate); resolution calls a real `gh api user`, which the
+  # PATH stub below answers with a bare `exit 0`. No login comes back, so the
+  # refusal fires before any test reaches the _GH_REVIEW_DONE logic it means
+  # to exercise. The wrapper prescribes this remedy directly: "If it is a test
+  # stub, unset GH_TOKEN for the test so this check is skipped."
+  #
+  # Note the tests here run the wrapper via `env HOME=...`, which inherits the
+  # caller's environment -- so clearing GH_TOKEN in setup() is what reaches the
+  # subprocess. See the matching comment in test_gh_wrapper.bats.
+  unset GH_TOKEN
+
   # The wrapper's review-script location is an exported override
   # (_gh_wrapper_review_script). If the developer's interactive shell exported
   # it -- and sourcing gh-wrapper.sh does exactly that -- bats inherits the
