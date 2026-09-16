@@ -1976,7 +1976,7 @@ fi
 # Skip code review for lockfiles - they're generated files
 if [[ -n "${CHANGED_FILES}" ]]; then
   # Check if ALL changed files are lockfiles
-  NON_LOCK_FILES=$(echo "${CHANGED_FILES}" | grep -vE '(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Gemfile\.lock|Cargo\.lock|composer\.lock)$' || echo "")
+  NON_LOCK_FILES=$(echo "${CHANGED_FILES}" | grep -vE '(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Gemfile\.lock|Cargo\.lock|composer\.lock|\.terraform\.lock\.hcl)$' || echo "")
   if [[ -z "${NON_LOCK_FILES}" ]]; then
     log_info "Lockfile-only changes detected - skipping code review (generated files)"
     printf 'skipped: lockfile-only\n' >>"${REVIEW_LOG}" || true
