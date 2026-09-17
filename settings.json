@@ -127,6 +127,15 @@
             "type": "command"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "command": "python3 ~/.claude/scripts/hook-redact-secret-output.py",
+            "type": "command"
+          }
+        ],
+        "matcher": "Bash|Read"
       }
     ],
     "PreToolUse": [
