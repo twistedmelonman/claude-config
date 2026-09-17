@@ -112,6 +112,24 @@ _DUMP = (
     r"\s*($|[;&|)`])"
 )
 
+# The gap between a printing command and a `$VAR` must not cross a newline.
+#
+# `[^|;&]*` (no newline exclusion) made an `echo` on ANY earlier line poison
+# every later secret expansion in the same multi-line command: `echo "hi"` on
+# line 1 plus `GH_TOKEN="$GH_TOKEN_NOS" gh api` on line 2 blocked, while line 2
+# alone allowed. That shape -- a survey script with a heading -- is routine, and
+# the spurious blocks trained exactly the "just work around the hook" reflex a
+# security guard cannot afford.
+#
+# A backslash-newline is a line CONTINUATION, not a separator: `echo \<newline>
+# "$GH_TOKEN"` is one logical command and must still block. So the gap allows
+# an escaped newline while rejecting a bare one.
+_GAP = r"(?:[^|;&\n]|\\\n)*"
+
+# A heredoc delimiter word, used to tell `<<EOF` (body is expanded) from
+# `<<'EOF'` (body is literal).
+_HEREDOC_ID = r"[A-Za-z_][A-Za-z0-9_]*"
+
 # A dump piped into something that keeps only the NAME half is safe, and is a
 # genuinely useful idiom -- it is how you answer "is this set?" for many vars
 # at once. Without this exemption the hook blocks `env | cut -d= -f1`, which
@@ -150,16 +168,33 @@ def find_expansion_forms(cmd, secrets):
         #   ${VAR/a/b}  search & replace
         # `${#VAR}` (length) is not affected by this lookahead: its `#` comes
         # BEFORE the name, so the pattern never reaches this point for it.
-        bare = rf"{_ECHOING}[^|;&]*\$\{{?{esc}\b(?!:?\+)"
+        bare = rf"{_ECHOING}{_GAP}\$\{{?{esc}\b(?!:?\+)"
         if re.search(bare, cmd):
             findings.append((name, "bare $VAR passed to a command that prints"))
             continue
 
         # `printenv GH_TOKEN` / `declare -p GH_TOKEN` take the NAME with no `$`
         # and print the value.
-        named_dump = rf"\b(printenv|declare\s+-[px]+|typeset\s+-[px]+)\b[^|;&]*\b{esc}\b"
+        named_dump = rf"\b(printenv|declare\s+-[px]+|typeset\s+-[px]+)\b{_GAP}\b{esc}\b"
         if re.search(named_dump, cmd):
             findings.append((name, "prints this variable's value by name"))
+            continue
+
+        # An UNQUOTED heredoc delimiter leaves the body subject to expansion, so
+        # `cat <<EOF` ... `$SECRET` ... `EOF` prints the value. Before the _GAP
+        # fix this was caught only incidentally, by the gap spanning newlines;
+        # scoping the gap to one line would have silently dropped it. It is a
+        # real leak shape, so it gets its own rule rather than riding on a bug.
+        #
+        # `<<'EOF'` and `<<"EOF"` disable expansion entirely -- the body reaches
+        # the file verbatim -- so a quoted delimiter is NOT flagged. That is what
+        # makes writing a script that references a secret var possible at all.
+        if re.search(rf"<<-?\s*(?![\"']){_HEREDOC_ID}", cmd) and re.search(
+            rf"\$\{{?{esc}\b(?!:?\+)", cmd
+        ):
+            findings.append(
+                (name, "unquoted heredoc expands this variable into output")
+            )
 
     # A dump is not attributable to one variable; it exposes all of them.
     dump = re.search(_DUMP, cmd)

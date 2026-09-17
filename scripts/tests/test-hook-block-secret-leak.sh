@@ -7,6 +7,19 @@
 
 set -uo pipefail
 
+# `cd` with a RELATIVE argument searches CDPATH before the current directory,
+# and prints the resolved path to stdout when it matches there. With
+# `CDPATH=/Users/andrewrich/Developer`, `cd "$(dirname ...)/.."` lands in
+# `Developer/scripts` instead of `claude-config/scripts` AND emits that path,
+# so the command substitution captures `pwd` doubled and newline-joined. HOOK
+# then points at a file that does not exist and every check exits 127.
+#
+# The failure is invocation-dependent -- 50/50 green when run directly, 49
+# failures when the environment carries CDPATH -- which is the false-green
+# shape this codebase has been bitten by before. The production dispatcher
+# (hook-block-all.sh) already unsets CDPATH; the tests did not.
+unset CDPATH
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HOOK="${SCRIPT_DIR}/hook-block-secret-leak.sh"
 
@@ -118,6 +131,46 @@ check 'set +x is not a dump' 0 'set +x'
 
 # `set` and `env` appearing mid-command, not as the command.
 check 'the word env inside a path' 0 'ls ~/Developer/dev-env'
+
+echo
+echo "=== multi-line commands: a printer must not reach across lines ==="
+# The false positive that made per-owner token surveys impossible: an `echo`
+# heading on one line made EVERY later secret expansion block, even though the
+# two are separate commands and the later one prints nothing.
+#
+# The discriminating pair is the whole point -- identical token usage, differing
+# only in whether an unrelated `echo` precedes it. Before the fix the first
+# blocked and the second allowed.
+check 'echo heading, then a token-prefixed gh call (separate lines)' 0 \
+  "echo \"=== survey ===\"
+GH_TOKEN=\"${D}GH_TOKEN\" gh api repos/x/y"
+check 'the same token-prefixed call with no echo (control for the pair)' 0 \
+  "GH_TOKEN=\"${D}GH_TOKEN\" gh api repos/x/y"
+
+# The for-loop shape from the original report. The loop is incidental -- it
+# blocked because `echo` preceded it, not because of the loop.
+check 'token-prefixed call inside a for loop after an echo' 0 \
+  "echo start
+for r in a b; do GH_TOKEN=\"${D}GH_TOKEN\" gh api \"repos/x/\${r}\"; done"
+
+# A backslash-newline is a CONTINUATION, not a separator: this is one logical
+# command that really does print the token. Scoping the gap to a single line
+# must not lose it.
+check 'backslash-continuation still reaches the secret (real leak)' 2 \
+  "echo \\
+\"${D}GH_TOKEN\""
+
+# An unquoted heredoc delimiter leaves the body subject to expansion. Before
+# the gap fix this was caught only because the gap spanned newlines; it now has
+# its own rule, because it is a genuine leak.
+check 'unquoted heredoc expands the secret into output' 2 \
+  "cat <<EOF
+${D}GH_TOKEN
+EOF"
+check 'quoted heredoc delimiter disables expansion' 0 \
+  "cat <<'EOF' > /tmp/p.sh
+export GH_TOKEN=\"${D}GH_TOKEN_NOS\"
+EOF"
 
 echo
 echo "=== ALLOW: fixtures must not false-positive ==="
