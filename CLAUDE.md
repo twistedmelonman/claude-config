@@ -5,7 +5,7 @@
 **How should output be shaped?** → [Output Shape](#output-shape) (applies to every reply)
 **Starting a session?** → [Protocol 0](#protocol-0-session-start)
 **About to commit/push?** → Read `~/.claude/docs/CHECKLISTS.md`
-**Declaring work complete?** → Read `~/.claude/docs/CHECKLISTS.md` (Completion Verification)
+**Declaring work complete?** → [Completion Protocol](#completion-protocol)
 **Need agent reference?** → Read `~/.claude/docs/REFERENCE.md`
 **Need commit format?** → Read `~/.claude/docs/CHECKLISTS.md` (Commit Message Format)
 
@@ -242,6 +242,8 @@ Before discarding, examine unstaged changes — they may be intentional uncommit
 
 ## Completion Protocol
 
+<a name="completion-protocol"></a>
+
 **Claude Code optimizes for completion. This is its primary failure mode.**
 
 "Done" means: PR exists, CI passes, PR review analyzed, all issues resolved.
@@ -254,7 +256,7 @@ Before discarding, examine unstaged changes — they may be intentional uncommit
 3. Review status: reviewers run, findings, what was fixed.
 4. One next action, or "nothing pending."
 
-Anything unresolved is named, not omitted. If a stage was skipped, say which and why. Never report a gate as passed without having checked it — the PRIME DIRECTIVE applies hardest here, because this is the claim Andrew acts on.
+Anything unresolved is named, not omitted. If one of those four was skipped or could not be checked, say which and why. Never report a gate as passed without having checked it — the PRIME DIRECTIVE applies hardest here, because this is the claim Andrew acts on.
 
 Banned until the PR is merged: "production ready", "ready for review", "all done", "changes are complete".
 

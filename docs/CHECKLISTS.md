@@ -150,7 +150,7 @@ merge into Protocol 4; this copy was removed so there is one source of truth.
 "Done" means: PR exists, CI passes, PR review analyzed, all issues resolved.
 "Done" does NOT mean: code written, tests pass locally, committed.
 
-Banned phrases until Stage 6 is complete: "production ready", "ready for review", "all done", "changes are complete".
+Banned phrases until the PR is merged: "production ready", "ready for review", "all done", "changes are complete". (Canonical wording: CLAUDE.md § Completion Protocol. The staged template below is retained for reference and is being reshaped in follow-up work.)
 
 ```
 📋 COMPLETION VERIFICATION:
