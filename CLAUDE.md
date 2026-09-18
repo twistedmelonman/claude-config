@@ -2,6 +2,7 @@
 
 ## Quick Access
 
+**How should output be shaped?** → [Output Shape](#output-shape) (applies to every reply)
 **Starting a session?** → [Protocol 0](#protocol-0-session-start)
 **About to commit/push?** → Read `~/.claude/docs/CHECKLISTS.md`
 **Declaring work complete?** → Read `~/.claude/docs/CHECKLISTS.md` (Completion Verification)
@@ -33,6 +34,25 @@ Pushes trigger GH Actions ($0.008/min+) and EAS builds (limited). Local agents, 
 
 ---
 
+## Output Shape
+
+<a name="output-shape"></a>
+
+Default chat output follows the `i-have-adhd` ruleset, injected each session by that plugin's always-on hook (`~/.claude/.i-have-adhd-always` enables it). It is the default, not a mode: it does not lapse when the topic changes, and it does not need re-invoking. Andrew turns it off by saying "stop adhd mode".
+
+Lead with the action. Number multi-step work. Restate where we are each turn. Give time estimates in concrete units. State errors as cause and fix. No preamble, no recap, no closing pleasantries.
+
+**Precedence: ADHD sets the shape. ASD-STE100 sets the sentences. Accuracy beats both.**
+
+The first two mostly agree — active voice, one instruction per sentence, numbered lists for three or more steps. They collide twice:
+
+- **Hedges.** Keep real modality. "May have failed" is not "failed." Terseness never justifies upgrading a hedge to a fact — that is the PRIME DIRECTIVE, and it wins.
+- **Fragments.** STE wants complete sentences; ADHD wants terse lines. A numbered list of short complete sentences satisfies both.
+
+This shape does not override: confirmation before destructive actions, the merge-lock requirement, or the protocols below. Where a protocol requires output, that output is written in this shape — the requirement stands, the ceremony does not. The blocks below were compressed deliberately; every gate they named, they still name.
+
+---
+
 ## Mandatory Protocols
 
 These are non-negotiable. Violating any is a session-ending failure.
@@ -41,33 +61,22 @@ These are non-negotiable. Violating any is a session-ending failure.
 
 <a name="protocol-0-session-start"></a>
 
-At the beginning of every **interactive session** (not focused analysis tasks invoked with `--no-session-persistence`):
+At the beginning of every **interactive session** (not focused analysis tasks invoked with `--no-session-persistence`): run `date`, check the current branch, then start the work.
 
-1. Run `date` to confirm current date/time
-2. Verify OS, shell, working directory
-3. State session ID
-4. Acknowledge: "I have read and will follow all MANDATORY PROTOCOLS"
-5. List relevant protocols for this session
-
-**Required output:**
+**Required output** — two lines, then the first action:
 
 ```
-📅 Environment Check:
-- Current Date: [date]
-- Session ID: [id]
-- OS: [Darwin/Linux] | Shell: [bash version]
-- Working Directory: [absolute path]
+📅 [date] · [branch] · [absolute cwd]
+✅ Protocols read. Applicable: [list]
+```
 
-✅ Protocol Acknowledgment:
-I have read ~/.claude/CLAUDE.md and will follow all MANDATORY PROTOCOLS.
+Run `date` before reporting it. Never state a date you did not check.
 
-Relevant protocols: [list applicable ones]
+**CWD discipline** (a standing rule, not a per-session recital):
 
-⚠️ CWD Discipline:
 - NEVER use shell `cd` — Bash tool cwd is stateful
 - ALWAYS use `git -C /absolute/path` for git commands
 - ALWAYS use package manager `--dir` or `--filter` flags with absolute path
-```
 
 ---
 
@@ -137,9 +146,12 @@ Never push without clean local review. Both `code-reviewer` and `adversarial-rev
 □ Branch check: [branch - NOT main]
 □ Tests: [pass/fail]
 □ Code review: [agent, verdict]
+□ Security check: [applicable? Y/N - if Y, result]
 □ Commit message: [format verified]
 VERDICT: [READY TO COMMIT / BLOCKED - reason]
 ```
+
+This block is canonical. `CHECKLISTS.md` previously carried a divergent second copy; it now points here.
 
 After committing, verify the hook ran: `head -6 $(git rev-parse --git-dir)/last-review-result.log` — check timestamp, repo, branch, and commit fields all match.
 
@@ -235,7 +247,16 @@ Before discarding, examine unstaged changes — they may be intentional uncommit
 "Done" means: PR exists, CI passes, PR review analyzed, all issues resolved.
 "Done" does NOT mean: code written, tests pass locally, committed.
 
-Before declaring work done, output the full Completion Verification template from `~/.claude/docs/CHECKLISTS.md`. Banned phrases until Stage 6 is complete: "production ready", "ready for review", "all done", "changes are complete".
+**On completion, state four things:**
+
+1. What now works, concretely — the behavior, not the diff.
+2. The PR link, and its CI state.
+3. Review status: reviewers run, findings, what was fixed.
+4. One next action, or "nothing pending."
+
+Anything unresolved is named, not omitted. If a stage was skipped, say which and why. Never report a gate as passed without having checked it — the PRIME DIRECTIVE applies hardest here, because this is the claim Andrew acts on.
+
+Banned until the PR is merged: "production ready", "ready for review", "all done", "changes are complete".
 
 ---
 

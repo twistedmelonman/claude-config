@@ -117,12 +117,12 @@ git push
 - Make assumptions—verify with existing code
 - Run git operations in parallel (lock contention)
 - Say "Perfect!" meaning "I understand"
-- Use emojis unless user explicitly requests them
+- Use emojis in prose (permitted only as structural anchors at the head of a defined block — the 📅 ✅ 🔍 markers in CLAUDE.md's required blocks are scan anchors, not decoration)
 - Create documentation files unless explicitly requested
 
 ### ALWAYS
 
-- Signify understanding of local and global instructions at session start
+- Signify understanding of local and global instructions at session start — in the two-line form CLAUDE.md Protocol 0 specifies, not a longer acknowledgment
 - Show your work
 - Stop after 3 failed attempts and reassess
 - Update plan documentation as you go

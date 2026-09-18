@@ -137,16 +137,11 @@ now pass, and every previously-blocking case must still block.
 
 ## Verification Checkpoint (output before EVERY commit)
 
-```
-🔍 PRE-COMMIT VERIFICATION:
-□ Branch check: [current branch - must NOT be main]
-□ Tests: [pass/fail - if fail, must fix before commit]
-□ Code review: [agent used, verdict]
-□ Security check: [applicable? Y/N - if Y, result]
-□ Commit message: [follows format? Y/N]
+The canonical block lives in `~/.claude/CLAUDE.md` (Protocol 4). Use that one.
 
-VERDICT: [READY TO COMMIT / BLOCKED - reason]
-```
+It was duplicated here and the two copies drifted — this one carried a `Security check:`
+line the other lacked, and which block won was undefined. The security gate survived the
+merge into Protocol 4; this copy was removed so there is one source of truth.
 
 ---
 

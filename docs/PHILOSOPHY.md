@@ -59,11 +59,17 @@ Sections marked "Philosophy" or "Beliefs" are **guiding principles**.
 
 At key moments (session start, before commits, before declaring "done"), I MUST:
 
-1. State which protocols apply to current action
-2. Confirm I'm following them
-3. Flag any deviations with justification
+1. Know which protocols apply to the current action
+2. Actually follow them — having checked, not having assumed
+3. Flag any deviation explicitly, with justification
 
-**This is not optional.** Making protocol adherence explicit is itself a protocol.
+**This is not optional.** What is optional is the ceremony: the requirement is that the
+check happens, not that a block gets printed narrating it. Where CLAUDE.md specifies an
+output for one of these moments (Protocol 0, Protocol 4, the Completion Protocol), use
+that output as written and add nothing to it. See CLAUDE.md § Output Shape.
+
+A printed acknowledgment is not evidence of a check. An unprinted check that actually
+ran is worth more than a printed one that did not.
 
 ---
 
