@@ -6,6 +6,14 @@
 # gets committed. Hashing those bytes is what binds one approval to one text --
 # any later drift re-blocks.
 #
+# Approval is an explicit STATUS word, not the act of saving. Saving looked
+# like the lighter-weight signal, but BBEdit does not write an unmodified
+# document, so "save without editing" -- the common case, approving text as
+# written -- produced no event at all. Watching mtime instead meant any write
+# counted, and a concurrent run's write counted as this run's approval
+# (measured 2026-09-18: a stale poller approved a batch no human had read).
+# Typing one word is both detectable and unambiguous.
+#
 # GUI only, by design. `open -a` reaches the window server from a process with
 # no TTY, which is what makes this work from an agent's tool call. Over SSH
 # there is no window server, so this fails closed rather than waving text
@@ -53,13 +61,6 @@ _hash() {
   sed -e 's/[[:space:]]*$//' "$1" | sha256sum | cut -d' ' -f1
 }
 
-# Approval is any save, not a content change: approving text as-written is a
-# normal outcome, and a content hash cannot see an unchanged save. Watching
-# mtime means ⌘S is the approval whether or not anything was edited.
-_mtime() {
-  stat -f '%m' "$1" 2>/dev/null || echo 0
-}
-
 _cmd_stage() {
   local name="$1" file="$2"
   [[ -f "${file}" ]] || _die "no such file: ${file}"
@@ -69,7 +70,7 @@ _cmd_stage() {
 }
 
 _cmd_open() {
-  local batch count before after waited=0
+  local batch count waited=0 nonce status
   batch="${GATE_DIR}/batch.txt"
 
   count=$(find "${PENDING}" -type f | wc -l | tr -d ' ')
@@ -77,20 +78,35 @@ _cmd_open() {
 
   _require_gui
 
+  # A second `open` sharing this GATE_DIR races on one batch.txt: whichever
+  # process polls first splits whatever the other one wrote. Measured
+  # 2026-09-18 -- a stale poller from an interrupted session split a newer
+  # batch and reported it approved, with no human involved at all.
+  _refuse_if_open
+
+  # Bound this batch to this process. _split_batch refuses a buffer carrying a
+  # different id, so a stale poller cannot approve text it never wrote.
+  nonce="$$-$(date +%s)"
+
   # One buffer for the whole set: the reviewer reads and edits everything in a
   # single pass, which is the point of batching.
   {
-    echo "# REVIEW THESE ${count} ITEM(S), EDIT FREELY, THEN SAVE."
+    echo "# STATUS: PENDING"
     echo "#"
-    echo "# Saving IS the approval -- editing is optional, approving as-written"
-    echo "# is fine. What you save is what gets committed."
+    echo "# REVIEW THESE ${count} ITEM(S), EDIT FREELY."
     echo "#"
-    echo "# To abort EVERYTHING: put ABORT on a line by itself (with the #)."
-    echo "# To abort ONE item: delete its body."
+    echo "# TO APPROVE: change PENDING above to APPROVED, then save."
+    echo "# TO ABORT:   change PENDING above to ABORT, then save."
     echo "#"
-    echo "# Do not rely on closing without saving: some editors autosave."
-    echo "# Lines starting with # are stripped."
+    echo "# An explicit word, not a bare save: BBEdit does not write an"
+    echo "# unmodified document, so there is no save to detect. Leaving this"
+    echo "# PENDING approves nothing, which is also what an editor autosaving"
+    echo "# on close leaves behind."
     echo "#"
+    echo "# To drop ONE item from the set: delete its body."
+    echo "# Lines starting with # are stripped from the approved text."
+    echo "#"
+    echo "# BATCH: ${nonce}"
     for f in "${PENDING}"/*; do
       echo ""
       echo "=== ${f##*/} ==="
@@ -98,46 +114,74 @@ _cmd_open() {
     done
   } >"${batch}"
 
-  # Second-granularity mtime means a save within the same second as the write
-  # would not register. Settle past that boundary before recording the
-  # baseline, so the first poll cannot miss a fast save.
-  sleep 1
-  before="$(_mtime "${batch}")"
-
   printf 'opening %s item(s) in %s\n' "${count}" "${EDITOR_APP}" >&2
   open -a "${EDITOR_APP}" "${batch}" || _die "could not open ${EDITOR_APP}"
 
   # `open` returns as soon as the request is dispatched, so wait on the file
-  # rather than on the editor. Polling keeps this from hanging forever on a
-  # window left open; the timeout reports rather than silently approving.
-  printf 'waiting for save (timeout %ss)...\n' "${POLL_TIMEOUT}" >&2
+  # rather than on the editor. Poll the status word: it is written only by a
+  # human typing it, whereas mtime moves for reasons that are not approval.
+  printf 'waiting for APPROVED or ABORT (timeout %ss)...\n' "${POLL_TIMEOUT}" >&2
   while ((waited < POLL_TIMEOUT)); do
     sleep 2
     waited=$((waited + 2))
-    after="$(_mtime "${batch}")"
-    [[ "${after}" != "${before}" ]] && break
+    status="$(_status "${batch}")"
+    [[ "${status}" != "PENDING" ]] && break
   done
 
-  after="$(_mtime "${batch}")"
-  if [[ "${after}" == "${before}" ]]; then
-    _die "no save detected within ${POLL_TIMEOUT}s; nothing approved"
-  fi
+  status="$(_status "${batch}")"
+  case "${status}" in
+    APPROVED) ;;
+    ABORT)
+      rm -f "${APPROVED:?}"/*
+      _die "ABORT; nothing approved"
+      ;;
+    PENDING)
+      _die "still PENDING after ${POLL_TIMEOUT}s; nothing approved"
+      ;;
+    *)
+      _die "unrecognized status '${status}'; nothing approved"
+      ;;
+  esac
 
-  # An explicit abort marker, not "closed without saving": some editors
-  # autosave on close, which would turn an intended abort into approval.
-  if grep -qE '^#[[:space:]]*ABORT[[:space:]]*$' "${batch}"; then
-    rm -f "${APPROVED:?}"/*
-    _die "ABORT found; nothing approved"
-  fi
-
-  _split_batch "${batch}"
+  _split_batch "${batch}" "${nonce}"
   printf 'approved %s item(s)\n' "$(find "${APPROVED}" -type f | wc -l | tr -d ' ')"
+}
+
+# The status word, or PENDING if the line is missing or unreadable: an
+# unparseable buffer must not read as approval.
+_status() {
+  local line
+  line="$(grep -m1 -E '^#[[:space:]]*STATUS:' "$1" 2>/dev/null || true)"
+  [[ -n "${line}" ]] || { printf 'PENDING\n'; return 0; }
+  printf '%s\n' "${line}" |
+    sed -E 's/^#[[:space:]]*STATUS:[[:space:]]*//; s/[[:space:]]*$//' |
+    tr '[:lower:]' '[:upper:]'
+}
+
+# Refuse to open while another gate-review is polling this same GATE_DIR.
+_refuse_if_open() {
+  local others
+  others="$(pgrep -f 'gate-review(\.sh)? open' | grep -v "^$$\$" || true)"
+  [[ -z "${others}" ]] && return 0
+  {
+    echo "gate-review: another review is already open (pid(s): ${others//$'\n'/ })."
+    echo "gate-review: two reviews sharing one batch approve each other's text."
+    echo "gate-review: finish or kill that one first."
+  } >&2
+  exit 1
 }
 
 # Split the saved buffer back into per-artifact approvals, so each commit is
 # checked against its own text rather than the batch as a whole.
 _split_batch() {
-  local batch="$1" name="" body=""
+  local batch="$1" want_nonce="${2:-}" name="" body="" got_nonce
+  # Only split the buffer this process wrote. Without this, a concurrent or
+  # stale run splits whatever it finds and reports it approved.
+  if [[ -n "${want_nonce}" ]]; then
+    got_nonce="$(sed -n -E 's/^#[[:space:]]*BATCH:[[:space:]]*(.*[^[:space:]])[[:space:]]*$/\1/p' "${batch}" | head -1)"
+    [[ "${got_nonce}" == "${want_nonce}" ]] ||
+      _die "batch id mismatch (saw '${got_nonce}', expected '${want_nonce}'); nothing approved"
+  fi
   rm -f "${APPROVED:?}"/*
 
   while IFS= read -r line; do
@@ -148,7 +192,11 @@ _split_batch() {
         name="${name% ===}"
         body=""
         ;;
-      '#'*) ;;
+      # Strip `#` lines only in the framing header, before the first artifact.
+      # Inside a body they are content: a markdown heading, a shebang, a
+      # `Closes #N` trailer. Stripping those silently rewrote the approved
+      # bytes, so `check` then failed against text that WAS approved.
+      '#'*) [[ -z "${name}" ]] || body+="${line}"$'\n' ;;
       *) [[ -n "${name}" ]] && body+="${line}"$'\n' ;;
     esac
   done <"${batch}"
