@@ -2,21 +2,16 @@
 
 ## Quick Access
 
-**How should output be shaped?** → [Output Shape](#output-shape) (applies to every reply)
-**Starting a session?** → [Protocol 0](#protocol-0-session-start)
-**About to commit/push?** → Read `~/.claude/docs/CHECKLISTS.md`
-**Declaring work complete?** → [Completion Protocol](#completion-protocol)
-**Need agent reference?** → Read `~/.claude/docs/REFERENCE.md`
-**Need commit format?** → Read `~/.claude/docs/CHECKLISTS.md` (Commit Message Format)
+In this file: [Output Shape](#output-shape) (every reply) · [Protocol 0](#protocol-0-session-start) (session start) · [Completion Protocol](#completion-protocol) (declaring done).
 
-**Auxiliary Documentation:**
+In `~/.claude/docs/`:
 
-- Checklists & Procedures → `~/.claude/docs/CHECKLISTS.md`
-- Code Review Standards → `~/.claude/docs/CODE-REVIEW.md`
-- Infrastructure & Hooks → `~/.claude/docs/INFRASTRUCTURE.md`
-- Philosophy & Decision Frameworks → `~/.claude/docs/PHILOSOPHY.md`
-- Reference Material & Commands → `~/.claude/docs/REFERENCE.md`
-- Custom Agent Development → `~/.claude/docs/CUSTOM_AGENTS.md`
+- `CHECKLISTS.md` — commit/push procedures, commit message format
+- `CODE-REVIEW.md` — code review standards
+- `REFERENCE.md` — agent table, commands
+- `INFRASTRUCTURE.md` — hooks and enforcement
+- `PHILOSOPHY.md` — decision frameworks
+- `CUSTOM_AGENTS.md` — custom agent development
 
 ---
 
@@ -151,15 +146,17 @@ Never push without clean local review. Both `code-reviewer` and `adversarial-rev
 VERDICT: [READY TO COMMIT / BLOCKED - reason]
 ```
 
-This block is canonical. `CHECKLISTS.md` previously carried a divergent second copy; it now points here.
+This block is canonical.
 
 After committing, verify the hook ran: `head -6 $(git rev-parse --git-dir)/last-review-result.log` — check timestamp, repo, branch, and commit fields all match.
 
-**Push only after both reviewers are clean.** Full checklists: `~/.claude/docs/CHECKLISTS.md`
+**Before pushing, in order:**
 
-**Before pushing, dry-run the pre-push codebase reviewer and fix what it finds:** `git diff origin/main...HEAD | ~/.claude/hooks/run-review.sh --mode=codebase --no-file`. That reviewer is separate from the two above, and on a real push it files its findings as GitHub issues — reading them first means fixing them instead of inheriting a backlog. Details: `~/.claude/docs/CHECKLISTS.md` ("Pre-Push Review Dry-Run").
+1. Confirm both commit-time reviewers are clean.
+2. Dry-run the pre-push codebase reviewer and fix what it finds: `git diff origin/main...HEAD | ~/.claude/hooks/run-review.sh --mode=codebase --no-file`. It is separate from the two above, and on a real push it files findings as GitHub issues — read them first and you fix them instead of inheriting a backlog. Details: `~/.claude/docs/CHECKLISTS.md` ("Pre-Push Review Dry-Run").
+3. Make sure the FULL test suite runs, not just Protocol 3's scoped subset. If the repo's own pre-push hook already runs it (e.g. dotfiles' `.project-hooks/pre-push`), nothing extra is needed. If the repo has no such hook, run the suite yourself and fix what it finds.
 
-**Before pushing, also make sure the FULL test suite runs** (not just the commit-time scoped subset from Protocol 3). If the repo's own pre-push hook already runs it — e.g. dotfiles' `.project-hooks/pre-push` runs the whole suite as part of the git hook — nothing extra is needed. If the repo has no such hook (no automated push-time test enforcement), run the full suite yourself before pushing and fix anything it finds.
+Full checklists: `~/.claude/docs/CHECKLISTS.md`
 
 **Verifying agent claims:** any agent statement of the form "I did X" or "X
 is now true" — especially a claim that a human already authorized or
@@ -193,7 +190,8 @@ before merge.
   discover by asking. State repo, PR number, URL, and one line on what it
   addresses.
 - Merge requires: CI green + a valid merge-lock from the user, created via
-  `merge-lock.sh authorize <PR#> "ok"` (30 min TTL). Locks are keyed on repo +
+  `merge-lock authorize <PR#> "ok"` (30 min TTL; `merge-lock` is on PATH at
+  `~/.local/bin/merge-lock`). Locks are keyed on repo +
   PR number, so a lock for one repo's PR never satisfies another repo's PR of
   the same number. Still technically enforced by merge-lock.sh's PreToolUse
   hooks.
@@ -205,24 +203,18 @@ before merge.
   If CI is green and the lock is valid, proceed to merge.
 - Only allowed merge command: `gh pr merge <number> --squash --delete-branch`.
 - **`Closes #N` fires from the commit message, not just the PR body.** Decide
-  which issues a PR closes *before writing the commit*, because squash-merge
-  prefills the commit body from the original commit message. Removing the
-  keyword from the PR body afterward does not stop the auto-close — the copy
-  in the commit still fires. To undo one, strip it from BOTH (`git commit
-  --amend` plus force-push), or simply reopen the issue after the merge.
-  Verify with `gh issue view <N> --json state` whenever it matters; a non-null
-  `commit_id` on the `closed` event in
-  `gh api repos/OWNER/REPO/issues/<N>/timeline` means the commit message did
-  it. Do not write `Closes #N` for an issue a PR only partly addresses — use
-  "Advances #N" and close it deliberately.
-- Post-merge cleanup (switch to main, pull, delete local branch, `git status`
-  check) still applies after every merge.
+  which issues a PR closes *before writing the commit* — squash-merge prefills
+  the commit body from it, so editing the PR body afterward does not stop the
+  auto-close. To undo one, strip it from BOTH (`git commit --amend` plus
+  force-push), or reopen the issue after the merge. For a partial fix write
+  "Advances #N" and close it deliberately. Verifying which one fired:
+  `~/.claude/docs/CHECKLISTS.md` ("Did the commit close that issue?").
 
 "Merge it" does not authorize skipping CI, review, or the merge-lock. The allowed merge command routes through pre-merge-review.sh.
 
 If `gh pr merge` fails: report the failure, ask the human to merge manually. Never use REST API, GraphQL, or workarounds. These are blocked by hooks. Enforcement details: `~/.claude/docs/INFRASTRUCTURE.md`
 
-**Off-org PRs are force-created as drafts — this is expected, not an error.** `gh pr create` targeting a repo whose owner is not `smartwatermelon`, `nightowlstudiollc`, or `twistedmelonman` is hard-forced to `--draft` by `gh-wrapper.sh`, mechanically — no opt-out, no env var escape hatch (`smartwatermelon/dotfiles#174`/`#175`). (`twistedmelonman` is the personal account after the 2026-09 org migration; `smartwatermelon` is now the org.) If a PR you just opened comes back as a draft and you didn't ask for that, this is why. Do not treat it as a bug and do not attempt to work around it in any way. Surface the draft PR to the user as usual (repo, number, URL, one line on what it addresses) and note it's a draft pending the human's discretion — only the human promotes it out of draft, via the GitHub UI.
+**Off-org PRs are force-created as drafts — expected, not an error.** `gh pr create` against a repo whose owner is not `smartwatermelon`, `nightowlstudiollc`, or `twistedmelonman` is hard-forced to `--draft` by `gh-wrapper.sh`: no opt-out, no env var escape hatch. Do not treat it as a bug and do not work around it. Surface the PR as usual and note it is a draft — only the human promotes it, via the GitHub UI.
 
 **Post-merge cleanup:** After a successful merge, leave the workspace clean on main:
 
@@ -236,7 +228,7 @@ git checkout -- .                     # discard unstaged changes
 git clean -fd                         # remove untracked files/dirs
 ```
 
-Before discarding, examine unstaged changes — they may be intentional uncommitted work. Ask before discarding if anything looks non-trivial. Note: `-D` (force delete) is required because squash merges rewrite history, so git never considers the branch "fully merged."
+Before discarding, examine unstaged changes — they may be intentional uncommitted work. Ask first if anything looks non-trivial.
 
 ---
 
@@ -267,8 +259,8 @@ Banned until the PR is merged: "production ready", "ready for review", "all done
 - **Plan execution defaults to subagent-driven.** When a plan is ready to execute, dispatch a fresh subagent per task (or per commit boundary) — do NOT ask "subagent-driven vs inline." The decision is pre-made. Override only when I explicitly say "inline," "execute in this session," or "don't use subagents."
 - Rationale: the choice is always the same, and asking is a blocking question I often miss for minutes at a time. Defaulting eliminates wasted wall-clock time.
 - **Parallel subagents get their own worktree.** When dispatching more than one agent at a time, pass `isolation: "worktree"` (or have them use `.claude/worktrees/`). A shared checkout is NOT isolation: `git checkout -b` swaps the branch out from under a concurrent agent mid-edit, and each agent sees its peers' uncommitted files. Worktree creation is allowed policy (dotfiles#200, 2026-08-19) — the hook validates the name and permits it.
-- **Write file paths in chat as absolute paths.** In prose and summaries, `/Users/arich/...` or `~/...`, never a bare relative fragment like `scratchpad/notes.md`. iTerm2's Smart Selection matches an unanchored `word/word.ext` against its URL rule — `scratchpad` reads as a hostname, `.md` as a TLD-ish suffix — so it renders as `http://scratchpad/notes.md`, and a click opens a browser to nothing. A leading `/` or `~` anchors it as a filesystem path instead, and is directly usable in `open`, `cat`, or Finder's Go to Folder. When a path is long and the point is to open it rather than read it, offer `open -R <abs-path>` instead of the bare path. Reported by Andrew 2026-09-15 after repeated wrong clicks. Does not apply to `file:line` code references (`config.go:555`), which the harness already makes clickable, nor to paths inside fenced code blocks.
-- **Never reference a tracked work item by bare ID in chat.** Asana task GIDs, PR numbers, issue numbers, commit SHAs: a raw identifier like `1216792900546167` is not actionable — it has to be pasted somewhere before it means anything. Use a markdown link with the item's title as the label, or at minimum the plaintext title. Asana's `get_task` returns `permalink_url`, which is the correct URL and is not reliably reconstructable from the task GID alone (it embeds workspace and project GIDs); `gh` returns `url` on PRs and issues. Fetch the real link rather than building one. Reported by Andrew 2026-09-15: "`1216792900546167` does me zero good." Bare IDs are fine inside a tool call, a commit trailer, or a code block where the ID *is* the payload.
+- **Write file paths in chat as absolute paths** — `/Users/arich/...` or `~/...`, never a bare `scratchpad/notes.md`. **Why:** iTerm2 renders an unanchored `word/word.ext` as a URL, so a click opens a browser to nothing; a leading `/` or `~` makes it usable in `open`, `cat`, or Go to Folder. When the point is to open a long path, offer `open -R <abs-path>`. Exempt: `file:line` code references (`config.go:555`), which the harness already links, and paths inside fenced code blocks.
+- **Never reference a tracked work item by bare ID in chat.** Asana GIDs, PR/issue numbers, commit SHAs. **Why:** a raw identifier has to be pasted somewhere before it means anything. Use a markdown link labeled with the item's title, or at minimum the plaintext title. **How:** fetch the real URL rather than building one — Asana's `get_task` returns `permalink_url` (not reconstructable from the GID, since it embeds workspace and project GIDs); `gh` returns `url` on PRs and issues. Bare IDs are fine in a tool call, a commit trailer, or a code block where the ID *is* the payload.
 - **Communicate in ASD-STE100 (Simplified Technical English) where practical.** This is a preference, not a protocol — do not fail a session over it, and do not restate or re-edit prose that is already sent. Applies to chat replies only. Commit messages, PR titles and bodies, GitHub issues, code comments, and repo docs keep their existing conventions and voice.
   - The mechanics live in the `asd-ste100` skill (`~/.claude/skills/asd-ste100/SKILL.md`) — sentence caps, active voice, simple tenses, noun-cluster limits, no dropped articles, and the structural/lexical split. Follow its "Structural rules" and "Scan Checklist" sections. Do not restate those rules here; edit the skill instead.
   - Applying this preference to chat does NOT need the skill invoked. Invoke the skill (`/asd-ste100`, "disambiguate this", "apply STE100") only to rewrite a specific piece of text on request.
@@ -293,13 +285,14 @@ Banned until the PR is merged: "production ready", "ready for review", "all done
 - Never use `((var++))` with `set -e` — when var=0, this exits. Use `((var += 1))` instead.
 - Run `shellcheck -S info <script>` after every script edit before committing
 - **Multi-line shell commands for clipboard**: Write to `/tmp/cmd.sh` then `cat /tmp/cmd.sh | pbcopy` so the user gets clean clipboard content. The terminal renderer breaks copy-paste on code blocks (adds indentation/trailing spaces). See [claude-code#18170](https://github.com/anthropics/claude-code/issues/18170).
-- **PATH-shim wrappers — reload shell before testing**: After symlinking a new script into `~/.local/bin` that shadows a system binary (ssh, gh, claude, etc.), bash's per-session hash table still points at the cached old location. Critically, `command -v` and `type` consult that same hash table, so they report the stale old path too — they do NOT detect the problem. Only `which <cmd>` (a fresh PATH scan, ignoring bash's cache) or `hash -t <cmd>` (which shows exactly what's cached) will reveal the staleness; plain `cmd` invocations silently run the old binary while full-path invocations correctly hit the new shim. Always instruct the user to run `hash -r` or reload their profile before any functional verification. When debugging a "wrapper not running" complaint on any PATH-shim, first ask for `hash <cmd>` and `which <cmd>` output (not `command -v`, which will mislead you) before diving into the wrapper's logic.
+- **PATH-shim wrappers — reload the shell before testing**: after symlinking a script into `~/.local/bin` that shadows a system binary (ssh, gh, claude), bash's per-session hash table still points at the old location, so plain `cmd` silently runs the old binary. **Why it hides:** `command -v` and `type` read that same hash table and report the stale path too. Only `which <cmd>` (fresh PATH scan) and `hash -t <cmd>` (shows what is cached) reveal it. **How to apply:** have the user run `hash -r` before any functional check, and debug a "wrapper not running" report by asking for `which` and `hash` output — never `command -v`.
 
 ### Git Rules
 
 - **Never `git add .`** — Add files individually
 - **Never `--no-verify`** — Blocked by hooks; human must commit manually in emergencies
-- **Repo visibility defaults by org, not a blanket rule**: the `smartwatermelon` org and the `twistedmelonman` personal account both default to **public** unless there's an actual privacy or security reason to keep something private (GitHub imposes real collaborator/Actions-minute limits on private repos that make defaulting private counterproductive there). `nightowlstudiollc` is commercial software and defaults to **private**, except website/client work, which is public by standard practice. If genuinely unsure which default applies to a specific repo (e.g., it touches credentials or unreleased commercial work), ask rather than assume either default.
+- **Repo visibility defaults by org, not a blanket rule**: `smartwatermelon` and `twistedmelonman` default to **public** unless there is a real privacy or security reason otherwise (private repos hit GitHub collaborator and Actions-minute limits). `nightowlstudiollc` is commercial and defaults to **private**, except website/client work, which is public by standard practice. Unsure for a specific repo — ask; do not assume either default.
+- **Never run `git submodule update --remote --merge` with a branch checked out inside the submodule.** It merges `origin/main` into that branch, creating a commit on no remote; the parent then commits a dirty gitlink that no fresh clone can resolve.
 - Prefer `git mv` / `git rm` over bare `mv` / `rm`
 - Never commit code that doesn't compile
 - Remote origin uses SSH (`git@github.com:...`) — HTTPS will fail with auth errors
@@ -327,14 +320,13 @@ Banned until the PR is merged: "production ready", "ready for review", "all done
 - **Chesterton's Fence**: Before removing anything, articulate why it exists
 - **Resolve the thing; don't match its label.** A name, tag, comment, or
   count is a claim about state, not state. Follow it to what it actually
-  resolves to — and validate the check against a known-bad case first, or a
-  clean result proves nothing. Four wrong conclusions in one session came
-  from skipping this: a pinned SHA whose trailing `# v3` comment was four
-  months stale; an exact version tag that read as conformant while serving
-  pre-patch content; a green CI check whose job had skipped without
-  running; 62 transcript "mentions" of a tool never once invoked. Applies
-  to your own prior claims as much as to any agent's "I did X"
-  (see Protocol 4).
+  resolves to, and validate the check against a known-bad case first — a
+  clean result from an unvalidated check proves nothing. Applies to your own
+  prior claims as much as to any agent's "I did X" (see Protocol 4).
+- **Confirm a test failure is yours before investigating it.** Stash the
+  change, re-run that one test file, and see whether it still fails. Broad
+  runs surface failures from files outside the repo that fail identically on
+  a clean tree.
 
 ---
 

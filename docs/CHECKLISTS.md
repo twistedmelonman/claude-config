@@ -71,6 +71,22 @@
 
 ---
 
+## Did the commit close that issue?
+
+`Closes #N` in a commit message auto-closes on merge, independently of the PR
+body (CLAUDE.md, Protocol 6). To check what actually happened:
+
+```bash
+gh issue view <N> --repo OWNER/REPO --json state
+gh api repos/OWNER/REPO/issues/<N>/timeline
+```
+
+A non-null `commit_id` on the `closed` event means the commit message fired it,
+not the PR body — so removing the keyword from the PR body would not have
+prevented it.
+
+---
+
 ## Pre-Push Review Dry-Run
 
 The pre-push hook runs a whole-codebase review and **files every non-blocking
