@@ -190,7 +190,8 @@ before merge.
   discover by asking. State repo, PR number, URL, and one line on what it
   addresses.
 - Merge requires: CI green + a valid merge-lock from the user, created via
-  `merge-lock.sh authorize <PR#> "ok"` (30 min TTL). Locks are keyed on repo +
+  `merge-lock authorize <PR#> "ok"` (30 min TTL; `merge-lock` is on PATH at
+  `~/.local/bin/merge-lock`). Locks are keyed on repo +
   PR number, so a lock for one repo's PR never satisfies another repo's PR of
   the same number. Still technically enforced by merge-lock.sh's PreToolUse
   hooks.
