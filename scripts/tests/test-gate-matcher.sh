@@ -132,46 +132,46 @@ _case "${PERSONIFY}" "approved then approved" \
 
 echo "=== dir-write: writes into the lock dirs must BLOCK (exit 2) ==="
 _case "${DIRWRITE}" "cp into merge-locks (the measured hole)" \
-  "$(_b64 'cp /tmp/x /Users/andrewrich/.claude/merge-locks/fake')" 2
+  "$(_b64 "cp /tmp/x ${HOME}/.claude/merge-locks/fake")" 2
 _case "${DIRWRITE}" "cp into gate-review/approved" \
-  "$(_b64 'cp /tmp/x /Users/andrewrich/.claude/gate-review/approved/fake')" 2
+  "$(_b64 "cp /tmp/x ${HOME}/.claude/gate-review/approved/fake")" 2
 _case "${DIRWRITE}" "redirect into approved" \
-  "$(_b64 'echo text > /Users/andrewrich/.claude/gate-review/approved/fake')" 2
+  "$(_b64 "echo text > ${HOME}/.claude/gate-review/approved/fake")" 2
 _case "${DIRWRITE}" "append-redirect into approved" \
-  "$(_b64 'echo text >> /Users/andrewrich/.claude/gate-review/approved/fake')" 2
+  "$(_b64 "echo text >> ${HOME}/.claude/gate-review/approved/fake")" 2
 _case "${DIRWRITE}" "tee into approved" \
-  "$(_b64 'echo text | tee /Users/andrewrich/.claude/gate-review/approved/fake')" 2
+  "$(_b64 "echo text | tee ${HOME}/.claude/gate-review/approved/fake")" 2
 _case "${DIRWRITE}" "sed -i on an approval" \
-  "$(_b64 'sed -i "" s/a/b/ /Users/andrewrich/.claude/gate-review/approved/commit-1')" 2
+  "$(_b64 "sed -i '' s/a/b/ ${HOME}/.claude/gate-review/approved/commit-1")" 2
 _case "${DIRWRITE}" "mv into approved" \
-  "$(_b64 'mv /tmp/x /Users/andrewrich/.claude/gate-review/approved/fake')" 2
+  "$(_b64 "mv /tmp/x ${HOME}/.claude/gate-review/approved/fake")" 2
 _case "${DIRWRITE}" "rm an approval" \
-  "$(_b64 'rm /Users/andrewrich/.claude/gate-review/approved/commit-1')" 2
+  "$(_b64 "rm ${HOME}/.claude/gate-review/approved/commit-1")" 2
 _case "${DIRWRITE}" "touch into approved" \
-  "$(_b64 'touch /Users/andrewrich/.claude/gate-review/approved/fake')" 2
+  "$(_b64 "touch ${HOME}/.claude/gate-review/approved/fake")" 2
 _case "${DIRWRITE}" "ln into approved" \
-  "$(_b64 'ln -s /tmp/x /Users/andrewrich/.claude/gate-review/approved/fake')" 2
+  "$(_b64 "ln -s /tmp/x ${HOME}/.claude/gate-review/approved/fake")" 2
 _case "${DIRWRITE}" "tilde-spelled path into merge-locks" \
   "$(_b64 'cp /tmp/x ~/.claude/merge-locks/fake')" 2
 _case "${DIRWRITE}" "batch.txt is a gate file too" \
-  "$(_b64 'echo "# STATUS: APPROVED" > /Users/andrewrich/.claude/gate-review/batch.txt')" 2
+  "$(_b64 "echo '# STATUS: APPROVED' > ${HOME}/.claude/gate-review/batch.txt")" 2
 
 echo "=== dir-write: READS must ALLOW (exit 0) ==="
 # The whole point of the gate is `git commit -F <approved file>`. If reading
 # from the dir blocked, the approved bytes could never reach git and the gate
 # would block the workflow it exists to permit.
 _case "${DIRWRITE}" "commit -F from the approved dir" \
-  "$(_b64 'git commit -F /Users/andrewrich/.claude/gate-review/approved/commit-1')" 0
+  "$(_b64 "git commit -F ${HOME}/.claude/gate-review/approved/commit-1")" 0
 _case "${DIRWRITE}" "cat an approval" \
-  "$(_b64 'cat /Users/andrewrich/.claude/gate-review/approved/commit-1')" 0
+  "$(_b64 "cat ${HOME}/.claude/gate-review/approved/commit-1")" 0
 _case "${DIRWRITE}" "ls the approved dir" \
-  "$(_b64 'ls -l /Users/andrewrich/.claude/gate-review/approved')" 0
+  "$(_b64 "ls -l ${HOME}/.claude/gate-review/approved")" 0
 _case "${DIRWRITE}" "grep an approval" \
-  "$(_b64 'grep -c . /Users/andrewrich/.claude/gate-review/approved/commit-1')" 0
+  "$(_b64 "grep -c . ${HOME}/.claude/gate-review/approved/commit-1")" 0
 _case "${DIRWRITE}" "gate-review stage writes via the tool, not a shell redirect" \
   "$(_b64 'gate-review.sh stage commit-1 /tmp/msg.txt')" 0
 _case "${DIRWRITE}" "cp OUT of the approved dir" \
-  "$(_b64 'cp /Users/andrewrich/.claude/gate-review/approved/commit-1 /tmp/x')" 0
+  "$(_b64 "cp ${HOME}/.claude/gate-review/approved/commit-1 /tmp/x")" 0
 _case "${DIRWRITE}" "unrelated cp" \
   "$(_b64 'cp /tmp/a /tmp/b')" 0
 _case "${DIRWRITE}" "a path merely mentioning the name" \
