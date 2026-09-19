@@ -226,7 +226,6 @@ _split_batch() {
       '#'*) [[ -z "${name}" ]] || body+="${line}"$'\n' ;;
       *) [[ -n "${name}" ]] && body+="${line}"$'\n' ;;
     esac
-    line=""
   done <"${batch}"
   [[ -n "${name}" ]] && _write_approved "${name}" "${body}"
   return 0
