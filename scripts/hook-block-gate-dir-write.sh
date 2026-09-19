@@ -42,19 +42,30 @@ cmd=$(printf '%s\n' "${input}" | jq -r '.tool_input.command // empty')
 # impossible. Only paths INSIDE the directories are approval state.
 _dirs='(\.claude/(merge-locks|gate-review)/)'
 
+# A verb counts only in COMMAND POSITION -- at the start of the line or just
+# after a separator. Without this anchor the alternation matched the letters
+# wherever they fell: `rm` inside "arm", `ln` inside "vuln", `dd` inside "add".
+# Measured 2026-09-18, and not hypothetically -- a `gh pr create` whose title
+# contained the word "arm" was blocked as a file write, because the title
+# supplied the verb and the --body-file argument supplied the directory. Any
+# prose that reaches a command line can do this.
+_bt=$(printf '\140')
+readonly _bt
+_cmdpos="(^|&&|\\|\\||;|\\||&|\\(|\\{|${_bt}|[[:space:]]then[[:space:]]|[[:space:]]do[[:space:]])[[:space:]]*((env|command|sudo)[[:space:]]+)*([^[:space:]|;&(){${_bt}]*/)?"
+
 # Writers that take their destination as an argument. The path may appear
 # anywhere after the verb, so these match the verb and the dir in one line
 # rather than trying to count arguments.
 #
 # `cp`/`mv` are matched only when the dir appears as the LAST token: copying
 # OUT of the dir is a read and must pass.
-_verb_last="(cp|mv|install)[[:space:]]+[^|;&]*[[:space:]][^[:space:]|;&]*${_dirs}[^[:space:]|;&]*[[:space:]]*($|[|;&])"
+_verb_last="${_cmdpos}(cp|mv|install)[[:space:]]+[^|;&]*[[:space:]][^[:space:]|;&]*${_dirs}[^[:space:]|;&]*[[:space:]]*($|[|;&])"
 
 # These take the target anywhere and are never reads.
-_verb_any="(rm|rmdir|touch|ln|mkdir|chmod|chown|truncate|dd|tee)[[:space:]]+[^|;&]*${_dirs}"
+_verb_any="${_cmdpos}(rm|rmdir|touch|ln|mkdir|chmod|chown|truncate|dd|tee)[[:space:]]+[^|;&]*${_dirs}"
 
 # In-place editors rewrite the file they are pointed at.
-_inplace="(sed[[:space:]]+[^|;&]*-i|perl[[:space:]]+[^|;&]*-i|ex[[:space:]])[^|;&]*${_dirs}"
+_inplace="${_cmdpos}(sed[[:space:]]+[^|;&]*-i|perl[[:space:]]+[^|;&]*-i|ex[[:space:]])[^|;&]*${_dirs}"
 
 # Shell redirects: `> path`, `>> path`. The redirect operator is what makes
 # this a write, so the dir must follow it.

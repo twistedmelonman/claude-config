@@ -187,5 +187,21 @@ _case "${DIRWRITE}" "redirect into a file named after the dir" \
 _case "${DIRWRITE}" "cp to a merge-locks-named file outside the dir" \
   "$(_b64 'cp /tmp/a /tmp/merge-locks.bak')" 0
 
+# A verb only counts in command position. Without that anchor the alternation
+# matched the letters wherever they appeared -- `rm` inside "arm", `ln` inside
+# "vuln", `dd` inside "add" -- so any PROSE carrying those letters plus a
+# --body-file pointing at the approved dir was blocked as a file write. This
+# actually happened: `gh pr create --title "...arm the gate..." --body-file
+# <approved>` was refused, which is the gate blocking its own PR.
+_case "${DIRWRITE}" "prose containing 'arm' with an approved body-file" \
+  "$(_b64 "gh pr create --title \"feat(gate): arm the approval gate\" --body-file ${HOME}/.claude/gate-review/approved/pr-body")" 0
+_case "${DIRWRITE}" "prose containing 'add' with an approved body-file" \
+  "$(_b64 "gh pr comment 1 --body-file ${HOME}/.claude/gate-review/approved/pr-body")" 0
+_case "${DIRWRITE}" "prose containing 'vuln' near the dir" \
+  "$(_b64 "echo \"vuln scan\" \&\& cat ${HOME}/.claude/gate-review/approved/commit-1")" 0
+# The anchor must not weaken a real write that follows a separator.
+_case "${DIRWRITE}" "a real rm after && is still blocked" \
+  "$(_b64 "echo done \&\& rm ${HOME}/.claude/gate-review/approved/commit-1")" 2
+
 echo "--- ${pass} passed, ${fail} failed"
 [[ "${fail}" == "0" ]]
