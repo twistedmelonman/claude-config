@@ -23,7 +23,14 @@
 #   gate-review.sh stage <name> <file>   queue one artifact for review
 #   gate-review.sh open                  open the batch, wait for save
 #   gate-review.sh hash <file>           print the approved-bytes hash
-#   gate-review.sh check <name> <file>   exit 0 if file matches its approval
+#   gate-review.sh check <file>          exit 0 if file matches ANY approval
+#
+# `check` takes no name. It hashes the input and accepts if any approved
+# artifact hashes the same, which dissolves the "which approval does this
+# commit correspond to" question rather than answering it: the hook sees only a
+# command string, and a name it had to infer from that string would be a guess
+# the human never made. The batch names are labels for reading the buffer, not
+# a mapping anything depends on.
 
 set -euo pipefail
 unset CDPATH
@@ -57,8 +64,17 @@ _require_gui() {
 
 # Normalize before hashing so a trailing-newline difference between what the
 # editor saved and what git receives does not read as tampering.
+#
+# The `$(...)` is load-bearing: it strips ALL trailing newlines, which the sed
+# alone does not. _cmd_open writes a blank line before each `=== name ===`
+# header, so every artifact but the last came back from _split_batch carrying
+# one extra newline, and `check <the file that was staged>` failed for all of
+# them. Measured 2026-09-18: staged bytes ended `body\n`, approved bytes ended
+# `body\n\n`, and only the last item in a batch ever verified. Both sides must
+# normalize identically or the round trip this tool exists to perform does not
+# close.
 _hash() {
-  sed -e 's/[[:space:]]*$//' "$1" | sha256sum | cut -d' ' -f1
+  printf '%s' "$(sed -e 's/[[:space:]]*$//' "$1")" | sha256sum | cut -d' ' -f1
 }
 
 _cmd_stage() {
@@ -182,9 +198,20 @@ _split_batch() {
     [[ "${got_nonce}" == "${want_nonce}" ]] ||
       _die "batch id mismatch (saw '${got_nonce}', expected '${want_nonce}'); nothing approved"
   fi
-  rm -f "${APPROVED:?}"/*
 
-  while IFS= read -r line; do
+  # Deliberately NOT `rm -f approved/*` here. Clearing the whole directory made
+  # each batch silently revoke the last one: approve a PR body now and a commit
+  # message an hour later, and the PR body's approval was gone by push time,
+  # with nothing to show it had ever been granted. Each name is instead cleared
+  # by _write_approved as it is rewritten, so a batch revokes only what it
+  # restates. ABORT still wipes everything -- that is the safe direction.
+
+  # `|| [[ -n "${line}" ]]` catches a final line with no trailing newline.
+  # Without it `read` returns false on that last line and the loop discards it,
+  # so an editor saving without a trailing newline silently truncated the
+  # approved body -- the bytes that would commit were not the bytes he read.
+  # Measured 2026-09-18: a two-line body came back as one line.
+  while IFS= read -r line || [[ -n "${line}" ]]; do
     case "${line}" in
       '=== '*' ===')
         [[ -n "${name}" ]] && _write_approved "${name}" "${body}"
@@ -199,6 +226,7 @@ _split_batch() {
       '#'*) [[ -z "${name}" ]] || body+="${line}"$'\n' ;;
       *) [[ -n "${name}" ]] && body+="${line}"$'\n' ;;
     esac
+    line=""
   done <"${batch}"
   [[ -n "${name}" ]] && _write_approved "${name}" "${body}"
   return 0
@@ -206,6 +234,11 @@ _split_batch() {
 
 _write_approved() {
   local name="$1" body="$2" trimmed
+  # Clear this name's prior approval BEFORE deciding whether to write a new
+  # one. Emptying an item in the editor is how a reviewer drops it from the
+  # set, so it must revoke; returning early without this rm would leave the
+  # previous approval standing and read as "still approved".
+  rm -f "${APPROVED:?}/${name}"
   # An item emptied in the editor is a deliberate abort, not an approval.
   trimmed="$(printf '%s' "${body}" | sed -e '/^[[:space:]]*$/d')"
   [[ -n "${trimmed}" ]] || return 0
@@ -213,10 +246,21 @@ _write_approved() {
   rm -f "${PENDING:?}/${name}"
 }
 
+# Accept if the bytes match ANY approval. A match is not consumed: re-posting
+# the same approved body (a `gh pr edit` after a `gh pr create`) is legitimate
+# and must not require a second review of identical text. The cost is that
+# approved/ grows until cleared by hand, which is visible and harmless --
+# whereas consuming a match would block a retry after a transient push failure.
 _cmd_check() {
-  local name="$1" file="$2"
-  [[ -f "${APPROVED}/${name}" ]] || return 1
-  [[ "$(_hash "${file}")" == "$(_hash "${APPROVED}/${name}")" ]]
+  local file="$1" want
+  [[ -f "${file}" ]] || return 1
+  want="$(_hash "${file}")"
+  local approval
+  for approval in "${APPROVED}"/*; do
+    [[ -f "${approval}" ]] || continue
+    [[ "$(_hash "${approval}")" == "${want}" ]] && return 0
+  done
+  return 1
 }
 
 case "${1:-}" in
@@ -224,5 +268,5 @@ case "${1:-}" in
   open) _cmd_open ;;
   hash) shift; _hash "$1" ;;
   check) shift; _cmd_check "$@" ;;
-  *) _die "usage: gate-review.sh {stage <name> <file>|open|hash <file>|check <name> <file>}" ;;
+  *) _die "usage: gate-review.sh {stage <name> <file>|open|hash <file>|check <file>}" ;;
 esac
