@@ -138,5 +138,110 @@ else
   _ok "framing header is stripped"
 fi
 
+# --- round trip: stage -> split -> check the ORIGINAL file -------------------
+
+# The workflow the tool exists for. Neither suite covered it, and it was
+# broken: _cmd_open writes a blank line before each `=== name ===`, so every
+# artifact but the LAST came back with one extra trailing newline and failed
+# its own check. Two items, because a one-item batch passes either way.
+_multi_batch() {
+  local nonce="$1" a="$2" b="$3"
+  {
+    echo "# STATUS: APPROVED"
+    echo "# BATCH: ${nonce}"
+    echo ""
+    echo "=== item-a ==="
+    cat "${a}"
+    echo ""
+    echo "=== item-b ==="
+    cat "${b}"
+  } >"${GATE_REVIEW_DIR}/batch.txt"
+}
+
+A="${TMP}/a.txt"
+B="${TMP}/b.txt"
+printf 'fix(one): first body\n' >"${A}"
+printf 'fix(two): second body\n' >"${B}"
+rm -f "${APPROVED:?}"/*
+_multi_batch rt "${A}" "${B}"
+_split_batch "${GATE_REVIEW_DIR}/batch.txt" rt >/dev/null 2>&1
+
+if _cmd_check "${A}" && _cmd_check "${B}"; then
+  _ok "both staged files verify against their approvals"
+else
+  _no "both staged files verify against their approvals"
+fi
+
+# A body whose last line has no trailing newline must keep that line. `read`
+# returns false on it, and without the `|| [[ -n ... ]]` guard the loop dropped
+# it: he would approve two lines and one would commit.
+printf 'line one\nline two no newline' >"${TMP}/c.txt"
+rm -f "${APPROVED:?}"/*
+{
+  echo "# STATUS: APPROVED"
+  echo "# BATCH: nl"
+  echo ""
+  echo "=== item-c ==="
+  cat "${TMP}/c.txt"
+} >"${GATE_REVIEW_DIR}/batch.txt"
+_split_batch "${GATE_REVIEW_DIR}/batch.txt" nl >/dev/null 2>&1
+if grep -q 'line two no newline' "${APPROVED}/item-c" 2>/dev/null; then
+  _ok "a body with no trailing newline keeps its last line"
+else
+  _no "a body with no trailing newline keeps its last line"
+fi
+
+# --- check matches on content, not on name -----------------------------------
+
+# `check` takes no name: the hook cannot infer one from a command string.
+# A body approved under any label must satisfy it.
+rm -f "${APPROVED:?}"/*
+printf 'some approved text\n' >"${APPROVED}/label-does-not-matter"
+printf 'some approved text\n' >"${TMP}/same-bytes.txt"
+printf 'different text\n' >"${TMP}/other-bytes.txt"
+if _cmd_check "${TMP}/same-bytes.txt"; then
+  _ok "matching bytes verify regardless of artifact name"
+else
+  _no "matching bytes verify regardless of artifact name"
+fi
+if _cmd_check "${TMP}/other-bytes.txt"; then
+  _no "non-matching bytes are refused"
+else
+  _ok "non-matching bytes are refused"
+fi
+
+# --- a batch revokes only what it restates -----------------------------------
+
+# _split_batch used to `rm -f approved/*`, so approving a commit message an
+# hour after a PR body silently revoked the PR body. Each name is now cleared
+# as it is rewritten.
+rm -f "${APPROVED:?}"/*
+printf 'earlier approval\n' >"${APPROVED}/from-an-earlier-batch"
+_batch APPROVED later 'a later body'
+_split_batch "${GATE_REVIEW_DIR}/batch.txt" later >/dev/null 2>&1
+if [[ -f "${APPROVED}/from-an-earlier-batch" ]]; then
+  _ok "a new batch leaves an earlier batch's approval standing"
+else
+  _no "a new batch leaves an earlier batch's approval standing"
+fi
+
+# Emptying an item in the editor is how a reviewer drops it. That must REVOKE
+# a prior approval of the same name, not leave the old one in place.
+rm -f "${APPROVED:?}"/*
+_batch APPROVED rev1 'original body'
+_split_batch "${GATE_REVIEW_DIR}/batch.txt" rev1 >/dev/null 2>&1
+cat >"${GATE_REVIEW_DIR}/batch.txt" <<'EOF'
+# STATUS: APPROVED
+# BATCH: rev2
+
+=== item-one ===
+EOF
+_split_batch "${GATE_REVIEW_DIR}/batch.txt" rev2 >/dev/null 2>&1
+if [[ -f "${APPROVED}/item-one" ]]; then
+  _no "emptying an item revokes its earlier approval"
+else
+  _ok "emptying an item revokes its earlier approval"
+fi
+
 echo "--- ${pass} passed, ${fail} failed"
 [[ "${fail}" == "0" ]]

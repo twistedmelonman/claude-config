@@ -18,9 +18,11 @@ input=$(cat)
 # name-only log wins.
 for hook in \
   "${SCRIPT_DIR}/hook-block-secret-leak.sh" \
+  "${SCRIPT_DIR}/hook-block-gate-dir-write.sh" \
   "${SCRIPT_DIR}/hook-block-no-verify.sh" \
   "${SCRIPT_DIR}/hook-block-short-no-verify.sh" \
   "${SCRIPT_DIR}/hook-block-main-commit.sh" \
+  "${SCRIPT_DIR}/hook-block-personify.sh" \
   "${SCRIPT_DIR}/hook-check-commit-message.py" \
   "${SCRIPT_DIR}/hook-block-merge-lock-authorize.sh" \
   "${SCRIPT_DIR}/hook-block-api-merge.sh" \

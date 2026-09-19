@@ -1,25 +1,67 @@
 #!/usr/bin/env bash
-# Block commit/PR/issue text unless PERSONIFY_OK is exported.
+# Block commit/PR/issue text that Andrew has not visually approved.
 #
-# Read from the environment, never from argv: an agent can type
-# `PERSONIFY_OK=1 git commit` but cannot export into the session. Same property
-# as merge-lock.
+# Approval lives on disk, in gate-review's approved/ directory, and is bound to
+# the exact bytes he saw. The hook extracts the file the command will read its
+# text from, and asks gate-review whether those bytes hash to something
+# approved. No name is inferred: `check` matches on content, so a body approved
+# under any label satisfies it.
 #
-# Covers the Bash-tool path; gh-wrapper.sh covers manual gh calls.
+# An earlier version read PERSONIFY_OK from the environment. That channel is
+# DEAD and must not be reintroduced: the Bash tool runs in a process that does
+# not inherit the interactive shell's environment, so an env-var ack is
+# unsatisfiable by the human, not merely strict. Measured 2026-09-18, along
+# with `$EDITOR` (no TTY on stdin or stdout). `open -a` is the one channel that
+# reaches a human from here, and gate-review.sh owns it.
+#
+# WHY THE INPUT FORM IS CONSTRAINED. The hook sees a raw command string and
+# nothing else. It can verify text only if that text is in a file it can read,
+# at a path it can resolve without a shell:
+#
+#   -F/--file, --body-file  with an ABSOLUTE path  -> verifiable, checked
+#   -m/--body "quoted text"                        -> blocked, nothing to hash
+#   a RELATIVE path                                -> blocked: with `git -C`,
+#       git resolves it against the repo and this hook against the tool's cwd,
+#       and the two disagree silently
+#   ~/... or $VAR/...                              -> blocked, same reason
+#   no message flag at all                         -> blocked; editor mode has
+#       no TTY here anyway, so it could never succeed
+#
+# PR and issue TITLES stay ungated -- one line by nature. `gh pr edit` is
+# gated only when it carries a body flag, so label and title edits pass.
+#
+# Covers the Bash-tool path; gh-wrapper.sh covers manual gh calls. The two are
+# deliberately redundant, so neither being bypassed lets text through.
 # Called by: hook-block-all.sh
 
 set -euo pipefail
 unset CDPATH
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GATE="${SCRIPT_DIR}/gate-review.sh"
 
 input=$(cat)
 cmd=$(printf '%s\n' "${input}" | jq -r '.tool_input.command // empty')
 
 [[ -n "${cmd}" ]] || exit 0
 
-# Subcommand-position matching, same shape and same limits as
-# hook-block-main-commit.sh: a regex approximation of shell syntax, bypassable
-# through aliases and variables. ${bt} avoids a literal backtick, which reads
-# to shellcheck as SC2016.
+# KNOWN LIMITATION -- READ BEFORE RELYING ON THIS AS A SECURITY BOUNDARY.
+# This is a regex approximation of shell syntax, not a shell parser, and it is
+# BYPASSABLE, in the same ways and for the same reasons as the equivalent
+# matcher in hook-block-main-commit.sh (see its note).
+#
+# Handled: command separators (`&&`, `||`, `;`, `|`, `&`, `(`, `{`, backtick),
+# the `then`/`do` keywords, an opening quote of any kind, `env`/`command`/
+# `sudo` wrappers, a leading path on the binary, and global options before the
+# subcommand.
+#
+# NOT handled, and not closeable at this layer: aliases and shell functions,
+# obfuscation through variables (`G=git; $G commit`), and any construction that
+# spells the binary without those literal characters. A PreToolUse hook sees the
+# raw, unexpanded string with no alias, function, or variable table to consult.
+# These are properties of where the check runs, not a to-do.
+#
+# ${bt} avoids a literal backtick, which reads to shellcheck as SC2016.
 bt=$(printf '\140')
 readonly bt
 _sep="(^|&&|\\|\\||;|\\||&|\\(|\\{|${bt}|'|\"|[[:space:]]then|[[:space:]]do)[[:space:]]*"
@@ -40,34 +82,107 @@ _scan=$(printf '%s\n' "${_scan}" | sed -E 's/(^|&&|\|\||;|\||&|\(|\{)[[:space:]]
 commit_re="${_sep}${_wrap}${_path}git[[:space:]]+(-[^[:space:]]+[[:space:]]+${_optval})*commit([[:space:]]|$)"
 gh_re="${_sep}${_wrap}${_path}gh[[:space:]]+(-[^[:space:]]+[[:space:]]+${_optval})*(pr|issue)[[:space:]]+(create|comment|edit)([[:space:]]|$)"
 
-surface=""
-if printf '%s\n' "${_scan}" | grep -qE "${commit_re}"; then
-  surface="commit message and code comments"
-elif printf '%s\n' "${_scan}" | grep -qE "${gh_re}"; then
-  surface="PR/issue body"
-fi
+# Split the line into segments at command separators, so each gated invocation
+# is judged on its own flags. Checking the line as a whole would let an
+# unapproved second command ride along on the first command's approved path.
+_segments() {
+  printf '%s\n' "${_scan}" | sed -E 's/(&&|\|\||;|\|)/\n/g'
+}
 
-[[ -n "${surface}" ]] || exit 0
+_deny() {
+  local reason="$1" surface="$2"
+  {
+    echo '🛑 BLOCKED: this text has not been visually approved.'
+    echo ''
+    echo "  surface: ${surface}"
+    echo "  reason:  ${reason}"
+    echo ''
+    echo 'Every commit message and PR body must be read and approved in the'
+    echo 'editor before it is written. To do that:'
+    echo ''
+    echo '  1. Write the text to a file.'
+    echo "  2. ${GATE} stage <label> <file>"
+    echo "  3. ${GATE} open"
+    echo '  4. Andrew reads the batch and types APPROVED in the STATUS line.'
+    echo '  5. Re-run the command against the APPROVED file, absolute path:'
+    echo "       git commit -F ${HOME}/.claude/gate-review/approved/<label>"
+    echo "       gh pr create --title t --body-file ${HOME}/.claude/gate-review/approved/<label>"
+    echo ''
+    echo '     Use the approved copy, not the file you staged: if he edited the'
+    echo '     text in the editor, his edits are what he approved and the'
+    echo '     original no longer matches.'
+    echo ''
+    echo 'Approval is his to give. Staging and opening on his behalf is fine;'
+    echo 'typing the word for him is not.'
+  } >&2
+  exit 2
+}
 
-if [[ -n "${PERSONIFY_OK:-}" ]]; then
-  exit 0
-fi
+# Pull the argument of a file flag out of one segment. Handles `-F path`,
+# `--file=path`, `--body-file path` and the quoted forms of each.
+_extract_path() {
+  local seg="$1" flags="$2" p
+  # `--flag=value`
+  p=$(printf '%s\n' "${seg}" | sed -En "s/.*[[:space:]](${flags})=\"([^\"]*)\".*/\\2/p" | head -1)
+  [[ -n "${p}" ]] && { printf '%s\n' "${p}"; return 0; }
+  p=$(printf '%s\n' "${seg}" | sed -En "s/.*[[:space:]](${flags})='([^']*)'.*/\\2/p" | head -1)
+  [[ -n "${p}" ]] && { printf '%s\n' "${p}"; return 0; }
+  p=$(printf '%s\n' "${seg}" | sed -En "s/.*[[:space:]](${flags})=([^[:space:]]+).*/\\2/p" | head -1)
+  [[ -n "${p}" ]] && { printf '%s\n' "${p}"; return 0; }
+  # `--flag value`
+  p=$(printf '%s\n' "${seg}" | sed -En "s/.*[[:space:]](${flags})[[:space:]]+\"([^\"]*)\".*/\\2/p" | head -1)
+  [[ -n "${p}" ]] && { printf '%s\n' "${p}"; return 0; }
+  p=$(printf '%s\n' "${seg}" | sed -En "s/.*[[:space:]](${flags})[[:space:]]+'([^']*)'.*/\\2/p" | head -1)
+  [[ -n "${p}" ]] && { printf '%s\n' "${p}"; return 0; }
+  printf '%s\n' "${seg}" | sed -En "s/.*[[:space:]](${flags})[[:space:]]+([^[:space:]]+).*/\\2/p" | head -1
+}
 
-{
-  echo '🛑 BLOCKED: text not acknowledged as edited for length.'
-  echo ''
-  echo "  surface: ${surface}"
-  echo ''
-  echo 'Before sending:'
-  echo '  1. Run /personify on the text.'
-  echo '  2. Cut it to the claim and its consequence. Drop the narration, the'
-  echo '     restatement of the diff, and anything the reader can see by'
-  echo '     looking at the change.'
-  echo '  3. A one-line change gets about one line of description.'
-  echo ''
-  echo 'Then, in your own shell:'
-  echo '  export PERSONIFY_OK=1'
-  echo ''
-  echo 'Set it yourself. An agent setting it inline does not satisfy this.'
-} >&2
-exit 2
+# Verify one gated segment: find its text-bearing flag, resolve the path, and
+# ask gate-review. Every exit from here is a decision; falling through the end
+# without one would be a silent pass.
+_verify_segment() {
+  local seg="$1" surface="$2" inline_flags="$3" file_flags="$4" path
+
+  # An inline string cannot be hashed from the command line at all.
+  if printf '%s\n' "${seg}" | grep -qE "[[:space:]](${inline_flags})([[:space:]]|=)"; then
+    _deny "text given inline; only a file can be verified" "${surface}"
+  fi
+
+  path="$(_extract_path "${seg}" "${file_flags}")"
+
+  if [[ -z "${path}" ]]; then
+    _deny "no message file named" "${surface}"
+  fi
+
+  case "${path}" in
+    /*) ;;
+    *) _deny "path '${path}' is not absolute; git and this hook would resolve it differently" "${surface}" ;;
+  esac
+
+  [[ -f "${path}" ]] || _deny "no such file: ${path}" "${surface}"
+
+  [[ -x "${GATE}" ]] || _deny "gate-review.sh missing at ${GATE}; cannot verify" "${surface}"
+
+  "${GATE}" check "${path}" ||
+    _deny "the bytes in ${path} do not match anything approved" "${surface}"
+}
+
+# `git commit --amend --no-edit` and `-C <sha>` reuse an existing message and
+# author no new text, but they name no file either, so they fall to the
+# no-message-file branch and block. That is the decided behaviour (2026-09-18):
+# the simple rule first, revisit if it fires repeatedly on genuinely unchanged
+# text.
+while IFS= read -r seg; do
+  [[ -n "${seg}" ]] || continue
+  if printf '%s\n' "${seg}" | grep -qE "${commit_re}"; then
+    _verify_segment "${seg}" "commit message" '-m|--message' '-F|--file'
+  elif printf '%s\n' "${seg}" | grep -qE "${gh_re}"; then
+    # Titles and labels carry no body text. Gate only when a body flag is
+    # present, per the locked decision that PR titles stay ungated.
+    if printf '%s\n' "${seg}" | grep -qE '[[:space:]](-b|--body|-F|--body-file)([[:space:]]|=)'; then
+      _verify_segment "${seg}" "PR/issue body" '-b|--body' '-F|--body-file'
+    fi
+  fi
+done < <(_segments)
+
+exit 0

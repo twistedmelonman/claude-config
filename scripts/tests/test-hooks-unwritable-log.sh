@@ -91,6 +91,10 @@ check hook-block-merge-locks-write.sh \
   "merge-locks-write: blocks with exit 2" \
   file_path "/Users/x/.claude/merge-locks/pr-1.lock"
 
+check hook-block-gate-dir-write.sh \
+  "gate-dir-write: blocks with exit 2" \
+  command "cp /tmp/x /Users/x/.claude/gate-review/approved/fake"
+
 # EnterWorktree carries a `name`, not a command. An invalid slug reaches deny(),
 # which writes to the log and then exits 2 -- same shape as the five above.
 check hook-block-enter-worktree.sh \
