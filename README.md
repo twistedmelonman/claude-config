@@ -163,5 +163,5 @@ See `CLAUDE.md` for protocol documentation.
 - Main config: [CLAUDE.md](./CLAUDE.md)
 - Superpowers marketplace: <https://github.com/smartwatermelon/superpowers-marketplace> (fork of obra/superpowers-marketplace)
 - claude-code-workflows: <https://github.com/smartwatermelon/claude-code-workflows-agents> (fork of wshobson/agents)
-- Personify skill: <https://github.com/smartwatermelon/personify>
+- Personify skill: <https://github.com/twistedmelonman/personify>
 - pr-review skill: <https://github.com/smartwatermelon/pr-review>

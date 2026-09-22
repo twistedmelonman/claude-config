@@ -78,7 +78,7 @@
     "personify": {
       "autoUpdate": true,
       "source": {
-        "repo": "smartwatermelon/personify",
+        "repo": "twistedmelonman/personify",
         "source": "github"
       }
     },
