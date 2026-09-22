@@ -1,7 +1,7 @@
 ---
 name: prepare-handoff
 description: Use when the user explicitly says "prepare handoff," "wrap up for handoff," or asks to save the current session's state so another session can resume the work. Writes a dense, structured export — not a prose summary — as a Markdown file in the locally synced Google Drive `Claude Handoff` folder so a later session can resume with minimal re-derivation. Verifies every path, branch, and identifier it records before writing, so the next session does not inherit stale pointers. Do not trigger on generic session-ending language like "thanks" or "bye."
-version: 2.0.0
+version: 2.0.1
 ---
 
 # Prepare Handoff
@@ -359,11 +359,13 @@ ls -d ~/Library/CloudStorage/GoogleDrive-*/My\ Drive
    `rm` every match other than the one just written. If an `rm` fails, say so
    plainly and name the file left behind. Do not report a clean handoff.
 
-   What happens after `rm` is only partly verified. On 2026-09-22 a deleted
-   handoff appeared in `<mount's parent>/.Trash/` and was gone from there a
-   few minutes later, once Drive had synced the deletion. Whether it then sits
-   in the Drive web trash for Drive's usual 30 days has not been confirmed.
-   Do not tell the user a retired handoff is recoverable.
+   An `rm` on the synced mount does not destroy the file. It lands in the
+   Drive web trash, which Google empties after 30 days, so a retired handoff
+   is recoverable from drive.google.com/drive/trash until then. Verified
+   2026-09-22: a handoff retired with `rm` was in the web trash two hours
+   later. The local `<mount's parent>/.Trash/` is only a staging area that
+   Drive clears once the deletion syncs, so an empty one there does not mean
+   the file is gone.
 
    Also run the same glob with `.gdoc` in place of `.md`. A match is a legacy
    handoff from before 2.0.0, when handoffs were native Google Docs. Do not
