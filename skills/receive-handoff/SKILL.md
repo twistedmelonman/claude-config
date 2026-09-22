@@ -1,7 +1,7 @@
 ---
 name: receive-handoff
-description: Use when the user explicitly says "receive handoff," "pick up where I left off," or starts a session continuing work saved by an earlier session. Reads the Google Drive handoff export and loads the files and KB entries it points to, so this session starts with working context rather than a description of context. Typically the first message of a session.
-version: 1.3.0
+description: Use when the user explicitly says "receive handoff," "pick up where I left off," or starts a session continuing work saved by an earlier session. Reads the Markdown handoff export from the locally synced Google Drive `Claude Handoff` folder and loads the files and KB entries it points to, so this session starts with working context rather than a description of context. Typically the first message of a session.
+version: 2.0.0
 ---
 
 # Receive Handoff
@@ -11,24 +11,37 @@ version: 1.3.0
 Trigger only on an explicit handoff request, ideally as the first message in a
 new session.
 
-## Before you start: load the connector
+## Before you start: find the folder
 
-The Google Drive tools are often not loaded at session start. Load them before
-step 1. In Claude Code, use `ToolSearch` with a query selecting the Drive
-tools (`search_files`, `read_file_content`). The tool-name prefix varies by
-client — do not hardcode it. If the Drive tools cannot be loaded at all, say
-so plainly and stop; do not proceed as if the handoff had been read.
+Handoffs are Markdown files in the `Claude Handoff` folder of a Google Drive
+that is synced to the local filesystem. Read them with ordinary file tools. No
+Drive connector is needed. Find the folder with a glob, not a hardcoded path,
+because the mount path contains the Google account name:
+
+```bash
+ls -d ~/Library/CloudStorage/GoogleDrive-*/My\ Drive/Claude\ Handoff
+```
+
+- Exactly one match → that is the folder.
+- More than one (two synced Google accounts) → ask which one, and list them.
+- None → say so plainly and stop. Do not proceed as if the handoff had been
+  read. This machine has no synced Drive, or the folder does not exist yet.
 
 ## What to do
 
 1. Identify the workstream. If the user already named one, use it.
 
-   Otherwise **search before asking** — a broad search costs one call and
-   usually removes the need for the question entirely:
+   Otherwise **list the folder before asking**. One listing usually removes
+   the need for the question entirely:
 
-   ```text
-   title contains 'Claude Handoff' and mimeType = 'application/vnd.google-apps.document'
+   ```bash
+   ls -1 "<folder>"
    ```
+
+   A handoff filename has the form
+   `Claude Handoff - <workstream> - <YYYY-MM-DD HHMM>.md`, timestamp in local
+   time. The workstream is the middle segment. A workstream name can contain
+   ` - ` itself, so split on the **last** ` - `, not the first.
 
    - Exactly one workstream in the results → use it and say which one you
      picked. Do not ask; asking a question with one possible answer wastes a
@@ -37,49 +50,45 @@ so plainly and stop; do not proceed as if the handoff had been read.
      their dates, so the answer is a selection rather than a recall exercise.
    - None → say so plainly and ask whether to start a new one.
 
-2. Find the document. Search by title, not by a remembered file id:
+   A `.gdoc` file in the folder is a legacy handoff from before 2.0.0, when
+   handoffs were native Google Docs. It is a ~177-byte JSON stub holding a
+   `doc_id`, not the document, so file tools cannot read its content. Report
+   it to the user as a legacy stub they can trash from the Drive web UI. Do
+   not try to read it, and do not count it as a workstream's current handoff.
 
-   ```text
-   title contains 'Claude Handoff - <workstream>' and mimeType = 'application/vnd.google-apps.document'
+2. Find the file with a glob anchored on the timestamp, never a remembered
+   filename:
+
+   ```bash
+   DIR="<folder>"; WS="<workstream>"
+   ls -1 "$DIR/Claude Handoff - $WS - "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]\ [0-9][0-9][0-9][0-9].md | sort
    ```
 
-   **Select the match with the newest `modifiedTime`.** This rule is load-
-   bearing. `prepare-handoff` writes a new document per handoff and then
-   trashes the older ones, so a leftover match means a trash call failed.
-   Reading the newest is correct whether or not that cleanup succeeded.
+   The anchor is load-bearing. A plain prefix match on
+   `Claude Handoff - CLI Tooling -` also matches every file of a workstream
+   named `CLI Tooling - Phase 2`, and after sorting, that other workstream's
+   file can come last and be read as this one's newest. The quoted `$WS`
+   matches literally, so `+` and `.` in a name are safe.
+
+   **Select the match with the newest timestamp in the filename, not the
+   newest mtime.** This rule is load-bearing. The filename timestamp is when
+   the handoff was written. The mtime is when Drive last wrote the file, and
+   the two diverge: on 2026-09-22 three handoffs dated 09-14, 09-15, and 09-18
+   were converted to Markdown, and every one of them got an mtime of 09-22.
+   `YYYY-MM-DD HHMM` sorts correctly as text, so the last line of the sorted
+   listing is the newest.
+
+   `prepare-handoff` writes a new file per handoff and then deletes the older
+   ones, so a leftover match means a delete failed. Reading the newest is
+   correct whether or not that cleanup succeeded.
 
    If more than one match survives, read the newest and **report the others to
    the user as stale copies**. Do not merge them.
 
-3. Read the document with `read_file_content`.
+3. Read the file with `Read`, using its absolute path.
 
-   Expect the Markdown syntax to come back backslash-escaped (`\#`, `\-`,
-   `` \` ``) — an artifact of the plain-text-to-Doc conversion, verified
-   2026-09-11. The content is intact. Read through the escaping; do not treat
-   it as corruption and do not report the document as malformed because of it.
-
-   **Strip the escapes out of any identifier before you use it.** The
-   escaping is not confined to markup — it lands inside the pointers
-   themselves, so a value copied verbatim out of the document will fail or,
-   worse, look up the wrong thing. Verified 2026-09-11:
-
-   | In the document | Actual value |
-   |---|---|
-   | `D\_kwDOC5tEDM4AocXf` | `D_kwDOC5tEDM4AocXf` (pasted as-is: GraphQL "malformed" error) |
-   | `\#3604` | `#3604` |
-   | `snapshot\_debian\_timestamp` | `snapshot_debian_timestamp` |
-   | `git\_pkgs\_proxy` | `git_pkgs_proxy` |
-
-   Before any grep, `gh` call, API lookup, or file open, **strip every
-   backslash that precedes a non-alphanumeric character.** Use the general
-   rule, not a list of characters to watch for: the same document also
-   contains `\[r\] SRE Q3/Q4 2026`, so brackets escape too, and any
-   enumeration will miss whichever character appears next.
-
-   A grep for an escaped identifier returns empty, which reads exactly like
-   "this work is already done" — an escaping artifact that imitates a real
-   finding. When a grep for something from the export comes back empty, rule
-   out escaping before reporting it as a state change.
+   The content is the Markdown exactly as the writer wrote it, so identifiers,
+   paths, and PR numbers can be used as they appear.
 
 4. **Check which sections are present before following any pointer.**
    `prepare-handoff` requires these:
@@ -273,7 +282,8 @@ so plainly and stop; do not proceed as if the handoff had been read.
      report it as missing when it resolved somewhere else.
    - a decision in the export that conflicts with something just read in the
      KB or the code
-   - extra handoff documents found in step 2
+   - extra handoff files found in step 2, and any legacy `.gdoc` stubs found
+     in step 1
    - a branch mismatch from step 5, **or a repo for which the export named no
      branch at all**
    - a merged change the export calls live that the tree shows was reverted
@@ -310,9 +320,9 @@ so plainly and stop; do not proceed as if the handoff had been read.
   reads, `git status`/`log`, and `gh` lookups are all part of following the
   pointers. Switching branches, editing files, and executing the **Next
   step** are not.
-- If the document does not exist, say so plainly and ask whether to start a
+- If the file does not exist, say so plainly and ask whether to start a
   new one. Do not guess at prior content.
-- If the Drive connector is unavailable, the read fails, or a referenced
+- If the handoff folder cannot be found, the read fails, or a referenced
   file/KB path can't be found, say so plainly instead of proceeding as if it
   resolved. A partially loaded handoff reported as complete is worse than a
   failed one.

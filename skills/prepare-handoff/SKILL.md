@@ -1,7 +1,7 @@
 ---
 name: prepare-handoff
-description: Use when the user explicitly says "prepare handoff," "wrap up for handoff," or asks to save the current session's state so another session can resume the work. Writes a dense, structured export — not a prose summary — to a Google Drive document so a later session can resume with minimal re-derivation. Verifies every path, branch, and identifier it records before writing, so the next session does not inherit stale pointers. Do not trigger on generic session-ending language like "thanks" or "bye."
-version: 1.4.0
+description: Use when the user explicitly says "prepare handoff," "wrap up for handoff," or asks to save the current session's state so another session can resume the work. Writes a dense, structured export — not a prose summary — as a Markdown file in the locally synced Google Drive `Claude Handoff` folder so a later session can resume with minimal re-derivation. Verifies every path, branch, and identifier it records before writing, so the next session does not inherit stale pointers. Do not trigger on generic session-ending language like "thanks" or "bye."
+version: 2.0.0
 ---
 
 # Prepare Handoff
@@ -23,47 +23,61 @@ Write for a reader with no memory of this session and no ability to ask a
 follow-up. Resolve every pronoun and vague referent ("it," "that approach,"
 "the fix") into the specific thing it refers to.
 
-Each handoff creates a new document and retires the previous one. The newest
-document must therefore reflect the full current state of the task —
+Each handoff creates a new file and retires the previous one. The newest
+file must therefore reflect the full current state of the task —
 everything still true, from this stint or any earlier one — not just what
 changed since the last handoff. If in doubt whether something belongs, ask:
 would dropping this leave the next agent unable to reconstruct it from
 anywhere else? If yes, include it.
 
-## Before you start: load the connector
+## Before you start: find the Drive mount
 
-The Google Drive tools are often not loaded at session start. Load them before
-step 1. In Claude Code, use `ToolSearch` with a query selecting the Drive
-tools (`search_files`, `create_file`, `update_file`, `trash_file`,
-`read_file_content`). The tool-name prefix varies by client — do not hardcode
-it. If the Drive tools cannot be loaded at all, skip to the fallback in
-**Constraints**.
+Handoffs are Markdown files in the `Claude Handoff` folder of a Google Drive
+that is synced to the local filesystem. Drive versions and backs them up the
+same way it does any other file, and ordinary file tools read and write them.
+No Drive connector is needed. Find the mount with a glob, not a hardcoded
+path, because the path contains the Google account name:
+
+```bash
+ls -d ~/Library/CloudStorage/GoogleDrive-*/My\ Drive
+```
+
+- Exactly one match → use it.
+- More than one (two synced Google accounts) → ask which one, and list them.
+- None → this machine has no synced Drive. Skip to the fallback in
+  **Constraints**.
 
 ## What to do
 
-1. Identify the workstream. If the user already named one this session, use
-   it. Otherwise ask once: "Which handoff doc — name or workstream?"
+1. Identify the workstream. List the existing handoffs first, so that a
+   continuing workstream keeps its exact spelling:
 
-   Document title format: `Claude Handoff - <workstream> - <YYYY-MM-DD HHMM>`.
-   The timestamp is part of the title because each handoff is a new file;
-   it makes the newest one identifiable from search results alone, without
-   opening any document.
-
-   Do not put a file extension in the title. Drive titles have no extension —
-   a `.gdoc` suffix is a local-sync artifact and will not match on search.
-
-2. Locate the folder named `Claude Handoff`:
-
-   ```text
-   title = 'Claude Handoff' and mimeType = 'application/vnd.google-apps.folder'
+   ```bash
+   ls -1 "<mount>/Claude Handoff"
    ```
 
-   - If it exists, use its `id` as `parentId` in step 5.
-   - If it does not exist, create it (`mimeType:
-     application/vnd.google-apps.folder`) and use the returned id.
+   If the user already named a workstream this session, match it against that
+   listing and use the listed spelling. Otherwise ask once: "Which handoff:
+   name or workstream?" A changed spelling (`CLI tooling` for `CLI Tooling`)
+   starts a second workstream and leaves the old handoff un-retired.
+
+   Filename format: `Claude Handoff - <workstream> - <YYYY-MM-DD HHMM>.md`,
+   with the timestamp in local time. The timestamp is part of the name because
+   each handoff is a new file. It makes the newest one identifiable from a
+   directory listing alone, without opening any file, and the receiving skill
+   selects on it. Do not rely on mtime for that: it records when the file was
+   last written, not when the handoff was.
+
+   A workstream name must not contain `/` or `:`. The first makes the path a
+   subdirectory; macOS displays the second as `/`.
+
+2. The folder is `<mount>/Claude Handoff`. Confirm it exists with `ls -d`; if
+   it does not, create it with `mkdir`. No folder id is needed. (Before 2.0.0
+   this step searched the Drive API for a folder id, which a Docs-only
+   connector could not return, so two handoffs landed in My Drive root.)
 
    Do not share the folder and do not ask about sharing. A single Google
-   account owns and reads every handoff document; the accounts this skill
+   account owns and reads every handoff file; the accounts this skill
    hands off between are Claude accounts on the same machine, not Google
    accounts. Sharing is not part of this workflow.
 
@@ -311,55 +325,58 @@ it. If the Drive tools cannot be loaded at all, skip to the fallback in
    saying what you could not confirm. A flagged uncertainty is useful; a
    confident wrong path is not.
 
-5. Create the new document with `create_file`:
+5. Write the export in Markdown with `Write`, to the absolute path
+   `<mount>/Claude Handoff/<filename from step 1>`. The file is read back
+   exactly as written, so write identifiers, paths, and PR numbers normally.
+   Then confirm it landed:
 
-   - `title`: from step 1
-   - `parentId`: the folder id from step 2
-   - `textContent`: the composed export
-   - `contentMimeType`: `text/plain`
-   - Leave conversion enabled (do **not** set
-     `disableConversionToGoogleType`). Plain text converts to a Google Doc,
-     which is what the read side needs — `read_file_content` does not support
-     `text/plain`, so an unconverted upload would force the receiving agent
-     into a base64 download.
-
-   Write the export in Markdown. Verified 2026-09-11: headings, bullets, and
-   backticked paths survive the conversion and stay readable, but
-   `read_file_content` returns the syntax characters backslash-escaped
-   (`\#`, `\-`, `` \` ``). Content is intact; do not rely on the markup
-   parsing cleanly on the far side. Prefer clear section headings over nested
-   formatting.
-
-   The escaping is **not** confined to markup — it lands inside identifiers,
-   which is why the read side has to strip it before use. Verified
-   2026-09-11: a GraphQL node id written as `D_kwDOC5tEDM4AocXf` comes back as
-   `D\_kwDOC5tEDM4AocXf` and fails with "Expected string or block string, but
-   it was malformed" if pasted literally; `#3604` becomes `\#3604`, and every
-   `snake_case` path (`snapshot_debian_timestamp`) gains backslashes. You
-   cannot prevent this from the write side, so do not try to pre-escape or
-   work around it. Write identifiers normally and rely on the receiving
-   skill's strip step.
-
-   Create the new document **before** retiring the old one. If creation
-   fails, the previous handoff must still be the newest valid document.
-
-6. Retire the previous handoff document for this workstream. Search:
-
-   ```text
-   title contains 'Claude Handoff - <workstream>' and mimeType = 'application/vnd.google-apps.document'
+   ```bash
+   ls -l "<absolute path>"
    ```
 
-   `trash_file` every match other than the one just created. The same Google
-   account owns every handoff document, so this is expected to succeed. If a
-   trash call does fail, say so plainly and name the document left behind —
-   do not report a clean handoff.
+   A non-zero byte count at that path is what "saved" means. A `Write` call
+   that did not error is not the same claim. This proves the file is on the
+   local mount, which is what a session on this machine reads; Drive uploads
+   it afterward.
+
+   Write the new file **before** retiring the old one. If the write fails,
+   the previous handoff must still be the newest valid file.
+
+6. Retire the previous handoff file for this workstream. List the matches
+   with a glob anchored on the timestamp:
+
+   ```bash
+   DIR="<mount>/Claude Handoff"; WS="<workstream>"
+   ls -1 "$DIR/Claude Handoff - $WS - "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]\ [0-9][0-9][0-9][0-9].md
+   ```
+
+   The anchor is load-bearing. A plain prefix match on
+   `Claude Handoff - CLI Tooling -` also matches every file of a workstream
+   named `CLI Tooling - Phase 2`, and this step would then delete that
+   workstream's handoff. The quoted `$WS` matches literally, so `+` and `.`
+   in a name are safe.
+
+   `rm` every match other than the one just written. If an `rm` fails, say so
+   plainly and name the file left behind. Do not report a clean handoff.
+
+   What happens after `rm` is only partly verified. On 2026-09-22 a deleted
+   handoff appeared in `<mount's parent>/.Trash/` and was gone from there a
+   few minutes later, once Drive had synced the deletion. Whether it then sits
+   in the Drive web trash for Drive's usual 30 days has not been confirmed.
+   Do not tell the user a retired handoff is recoverable.
+
+   Also run the same glob with `.gdoc` in place of `.md`. A match is a legacy
+   handoff from before 2.0.0, when handoffs were native Google Docs. Do not
+   `rm` it; it has not been verified that deleting the stub trashes the Doc
+   behind it. Tell the user it is there and that they can trash it from the
+   Drive web UI; it stops being reported once it is gone.
 
    A stale copy left behind degrades tidiness, not correctness: the receiving
-   agent selects the newest document by `modifiedTime` regardless.
+   agent selects the newest file by the timestamp in its name regardless.
 
-7. Confirm to the user in one line: the document title, and the folder it went
-   to. Do not restate the export — they already saw it composed. If step 6
-   left any document un-retired, state that in the same breath. If any pointer
+7. Confirm to the user in one line: the filename, and the folder it went to.
+   Do not restate the export — they already saw it composed. If step 6 left
+   any file un-retired, state that in the same breath. If any pointer
    went out with an `UNVERIFIED:` prefix, name those too — the user is the
    only one who can resolve them before the next session inherits them.
 
@@ -402,7 +419,9 @@ it. If the Drive tools cannot be loaded at all, skip to the fallback in
   files/KB pointers themselves. If a fact is available by following a pointer,
   point to it instead of copying it in. The sole exception is a client-scoped
   store (memory, Project instructions) — inline those, per step 3.
-- If the Drive connector is unavailable or the write fails, say so plainly and
+- If no synced Drive mount exists or the write fails, say so plainly and
   offer the export as plain text for the user to paste manually instead. Do
-  not describe a handoff as saved unless a `create_file` call returned a
-  document id.
+  not fall back to creating a Google Doc through a connector: the Doc
+  conversion backslash-escapes identifiers, which is the failure 2.0.0
+  removed. Do not describe a handoff as saved unless `ls -l` shows the file
+  at its path with a non-zero size.
