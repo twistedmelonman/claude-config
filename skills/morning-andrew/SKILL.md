@@ -148,7 +148,7 @@ Observe. Don't command. Don't apologize. Don't pad. Don't narrate.
 Register: competent engineer scanning this between sips of coffee. Every word earns its
 place. Fragments are fine. Articles are optional.
 
-Not dumbify level — slightly more readable than that — but same underlying ethic:
+Terse, but a notch more readable than pure lowercase fragments. Same underlying ethic:
 semantic payload only, zero ceremony.
 
 ## Standing context

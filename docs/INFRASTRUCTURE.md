@@ -17,18 +17,73 @@ Many protocols are enforced by git hooks and scripts:
 | Protocol | Automation | Location |
 |----------|------------|----------|
 | Protocol 1 (No commits to main) | pre-commit hook | `~/.config/git/hooks/pre-commit` |
-| Protocol 4 (Code review) | pre-commit hook | `~/.config/git/hooks/pre-commit` |
-| Protocol 4 (Iterative review) | pre-push hook | `~/.config/git/hooks/pre-push` |
+| Protocol 4 (Code review) | commit-msg hook (calls `run-review.sh`) | `~/.config/git/hooks/commit-msg` |
+| Protocol 4 (Full-diff review) | pre-push hook | `~/.config/git/hooks/pre-push` |
 | Protocol 6 (No REST/GraphQL merge) | PreToolUse Bash hook | `~/.claude/scripts/hook-block-api-merge.sh` |
-| Protocol 6 (No REST/GraphQL merge) | gh() wrapper | `~/.config/bash/functions.sh` |
+| Protocol 6 (No REST/GraphQL merge) | gh() wrapper (sourced by `functions.sh`) | `~/.config/bash/gh-wrapper.sh` |
 | Protocol 6 (Off-org PRs forced draft) | gh-wrapper.sh | `~/.config/bash/gh-wrapper.sh` |
-| Build consistency | build-commons.sh | `~/.claude/lib/build-commons.sh` |
-| Deployment safety | deploy-commons.sh | `~/.claude/lib/deploy-commons.sh` |
-| Branch cleanup | audit-branches.sh | `~/.claude/scripts/audit-branches.sh` |
+| Protocol 6 (Merge-lock is human-only) | PreToolUse Bash + Write/Edit hooks | `~/.claude/scripts/hook-block-merge-lock-authorize.sh`, `hook-block-merge-locks-write.sh` |
+| Commit/PR text approval | PreToolUse Bash hook + gh-wrapper.sh | `~/.claude/scripts/hook-block-personify.sh`, `gate-review.sh` |
+
+The pre-commit hook no longer runs AI review. It blocks commits on
+main/master, runs the pre-commit framework, and runs `.project-hooks/pre-commit`.
+AI review moved to commit-msg so the reviewer can see the commit message.
+
+`build-commons.sh`, `deploy-commons.sh`, and `audit-branches.sh` were listed
+here previously. They no longer exist in claude-config or dotfiles.
 
 **Key Point**: If hooks block an operation, it means a protocol was violated. `--no-verify` is BLOCKED by Claude Code hooks. Emergency override (human only): Human must run commit manually.
 
 **When a hook blocks your commit**: Go back and rework the code — do not ask the human to override. See CODE-REVIEW.md § "When Reviews Find Issues — Rework, Don't Override" for the full escalation ladder. Only after 3+ genuine rework attempts with no viable path forward should you present the findings and ask if the human wants to override.
+
+---
+
+## Claude Code Tool Hooks
+
+Configured in `settings.json` under `hooks`. The status-line `cc-status`
+entries are omitted here.
+
+| Event / matcher | Script |
+|-----------------|--------|
+| PreToolUse `Bash` | `~/.claude/scripts/hook-block-all.sh` (chain below) |
+| PreToolUse `Write`, `Edit` | `hook-block-merge-locks-write.sh`: blocks writes into `merge-locks/` and `gate-review/` |
+| PreToolUse `EnterWorktree` | `hook-block-enter-worktree.sh` |
+| PostToolUse `Bash\|Read` | `hook-redact-secret-output.py` |
+| Stop, SubagentStop | `hook-budget-guard.sh` |
+
+`hook-block-all.sh` runs these in order and stops at the first block:
+
+1. `hook-block-secret-leak.sh` (first on purpose: the others log the full command when they block)
+2. `hook-block-gate-dir-write.sh`
+3. `hook-block-no-verify.sh`
+4. `hook-block-short-no-verify.sh`
+5. `hook-block-main-commit.sh`
+6. `hook-block-personify.sh` (visual approval gate, below)
+7. `hook-check-commit-message.py`
+8. `hook-block-merge-lock-authorize.sh`
+9. `hook-block-api-merge.sh`
+10. `hook-block-git-worktree.sh`
+
+### Visual Approval Gate
+
+Commit messages and PR/issue bodies need Andrew's visual approval.
+
+- `scripts/gate-review.sh stage <name> <file>` queues text. `open` shows the
+  batch in BBEdit and waits. Approval is changing `# STATUS: PENDING` to
+  `APPROVED` and saving. `check <file>` exits 0 if the file matches any approval.
+- `check` compares a content hash. A match is not consumed, so an identical
+  repeat (for example a retry after a failed push) passes.
+- Text must come from a file at an absolute path: `git commit -F` or
+  `gh ... --body-file`. Inline `-m`/`--body`, relative paths, and `~`/`$VAR`
+  paths are blocked. PR and issue titles are not gated.
+- Enforced by `hook-block-personify.sh` for the Bash tool, and by
+  `gh-wrapper.sh` (`_gh_wrapper_approval_gate`) for manual `gh` calls.
+
+### Merge-Lock Subcommands
+
+`merge-lock authorize`, its alias `auth`, and `tui` (a bulk picker) all grant
+locks. All three are human-only. `hook-block-merge-lock-authorize.sh` blocks
+them for agents. `pre-merge-review.sh` checks for a valid lock before a merge.
 
 ---
 
@@ -82,15 +137,27 @@ This enforcement exists because of two incidents on 2026-02-24:
 
 **If an agent hits this**: a draft PR on an off-org repo is expected behavior, not a bug. Do not attempt to work around it in any way. Surface it to the user as a draft PR and stop there.
 
+### Known Gaps
+
+- `gh-wrapper.sh` reaches the Bash tool two ways: `settings.json` sets `BASH_ENV` to `~/.config/bash/functions.sh`, which sources it, and it is installed as `~/.local/bin/gh`. It also exports `sugh`, which runs the real `gh` binary and skips ALL wrapper checks (merge guard, draft forcing, approval gate, identity switch). The "no flag to opt out" statement above applies to `gh`, not `sugh`.
+- Full bypass list: `docs/2026-09-23-personify-and-gating-overview.md` in smartwatermelon/dev-env.
+
 ---
 
 ## Review Hooks
 
 ### How Review Runs
 
-- `code-reviewer` and `adversarial-reviewer` run on EVERY commit automatically via pre-commit hook
-- adversarial-reviewer uses v1.1.0 agent with structured failure mode checklist, severity calibration, and domain awareness
-- Security-critical files get an "elevated scrutiny" log note but all commits are reviewed
+- `code-reviewer` and `adversarial-reviewer` run on EVERY commit automatically via the commit-msg hook, which calls `~/.claude/hooks/run-review.sh` with the in-progress message
+- adversarial-reviewer (code-critic plugin) uses a structured failure mode checklist, severity calibration, and domain awareness
+- Models (defaults; override with `git config review.model`, `review.adversarialModel`, `review.arbiterModel`):
+  - code-reviewer: `claude-haiku-4-5-20251001` for commits, `claude-sonnet-4-6` for `--mode=full-diff` and `--mode=codebase`
+  - adversarial-reviewer: `claude-sonnet-4-6` in every mode
+  - arbiter: `claude-sonnet-4-6`, invoked only when code-reviewer returns a BLOCKING FAIL and adversarial-reviewer returns PASS
+- Size limits: `review.maxLines` (default 1000) is the full-review ceiling; above it, review is chunked per file. Above `review.skipThreshold` (default 2500) the commit is blocked and must be split.
+- commit-msg skips review when the subject starts with `fixup!`, `squash!`, `wip:`, `WIP:`, or `wip`/`WIP` followed by whitespace
+- The pre-push hook runs one `--mode=full-diff` review that must pass. It files no issues. `--mode=codebase` is weekly/on-demand only (see CHECKLISTS.md, "On-Demand Codebase Review").
+- `run-review.sh` has no special path for security-critical files. `is_security_critical` (in `lib-review-issues.sh`) is used only by `pre-merge-review.sh` (those diffs are never summarized) and for the `security` issue label. See REFERENCE.md for the pattern.
 
 ### Review Log Verification
 
@@ -116,7 +183,7 @@ If review times out:
 
 ## Settings Rationale
 
-### `useAutoModeDuringPlan: false` (`settings.json:133`)
+### `useAutoModeDuringPlan: false` (`settings.json:293`)
 
 Disables Claude Code's auto-mode permission classifier while in Plan Mode. Auto mode
 normally lets a heuristic classifier silently approve Bash commands it judges
@@ -127,13 +194,6 @@ conflicting "execute immediately" behavior (see upstream Claude Code changelog).
 Keeping this `false` means every action during planning stays gated on an explicit
 human decision, consistent with this config's broader preference for explicit
 checkpoints (Protocol 6's merge-lock authorization, etc.) over auto-approval.
-
----
-
-## Shared Libraries
-
-- `~/.claude/lib/build-commons.sh` — Common build functions
-- `~/.claude/lib/deploy-commons.sh` — Common deployment functions
 
 ---
 
