@@ -158,12 +158,15 @@ git push
 
 ### Security-Critical File Patterns
 
-Git hooks detect these patterns and log "elevated scrutiny" during adversarial review:
+`is_security_critical` in `~/.claude/hooks/lib-review-issues.sh` matches a file
+path as a substring against:
 
-- **Auth**: `**/auth/**`, `**/oauth/**`, `**/jwt/**`, `**/password/**`, `**/session/**`
-- **Payment**: `**/payment/**`, `**/billing/**`, `**/stripe/**`, `**/paypal/**`
-- **Database**: `**/db/**`, `**/database/**`, `**/models/**`, `**/migrations/**`, `**/schema/**`
-- **Security**: `**/security/**`, `**/crypto/**`, `**/encryption/**`, `**/secrets/**`
+`auth|oauth|jwt|password|session|login|register|payment|billing|stripe|paypal|checkout|transaction|db|database|model|migration|schema|security|crypto|encryption|secret|vault`
+
+It has two uses. `pre-merge-review.sh` always sends these files' diffs to the
+reviewer in full (never summarized or truncated). `lib-review-issues.sh` adds a
+`security` label to a filed issue whose location matches. Commit-time review
+(`run-review.sh`) does not treat these paths differently.
 
 ---
 

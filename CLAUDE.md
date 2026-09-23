@@ -153,7 +153,7 @@ After committing, verify the hook ran: `head -6 $(git rev-parse --git-dir)/last-
 **Before pushing, in order:**
 
 1. Confirm both commit-time reviewers are clean.
-2. Dry-run the pre-push codebase reviewer and fix what it finds: `git diff origin/main...HEAD | ~/.claude/hooks/run-review.sh --mode=codebase --no-file`. It is separate from the two above, and on a real push it files findings as GitHub issues — read them first and you fix them instead of inheriting a backlog. Details: `~/.claude/docs/CHECKLISTS.md` ("Pre-Push Review Dry-Run").
+2. Expect the pre-push hook to run one `--mode=full-diff` review of `base...HEAD`. It must pass for the push to succeed, and it files no GitHub issues. A whole-codebase scan (`--mode=codebase --no-file`) is optional and on demand, not part of the push. Details: `~/.claude/docs/CHECKLISTS.md` ("On-Demand Codebase Review").
 3. Make sure the FULL test suite runs, not just Protocol 3's scoped subset. If the repo's own pre-push hook already runs it (e.g. dotfiles' `.project-hooks/pre-push`), nothing extra is needed. If the repo has no such hook, run the suite yourself and fix what it finds.
 
 Full checklists: `~/.claude/docs/CHECKLISTS.md`
@@ -193,8 +193,10 @@ before merge.
   `merge-lock authorize <PR#> "ok"` (30 min TTL; `merge-lock` is on PATH at
   `~/.local/bin/merge-lock`). Locks are keyed on repo +
   PR number, so a lock for one repo's PR never satisfies another repo's PR of
-  the same number. Still technically enforced by merge-lock.sh's PreToolUse
-  hooks.
+  the same number. Enforced by `hook-block-merge-lock-authorize.sh` (in the
+  `hook-block-all.sh` Bash chain; blocks `authorize`/`auth`/`tui`),
+  `hook-block-merge-locks-write.sh` (Write/Edit into `merge-locks/`), and
+  pre-merge-review.sh's lock check.
 - **The lock IS the approval.** Creating it is a human-only operation, so a
   valid lock plus green CI is sufficient to merge — do NOT additionally wait
   for the user to type "approved". Asking for a second confirmation treats the

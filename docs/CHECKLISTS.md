@@ -45,10 +45,10 @@
 ```
 □ All pre-commit checks pass
 □ Adversarial review clean (runs on every commit via hook)
-□ Dry-run the pre-push codebase reviewer and FIX what it finds, before pushing
-  (see "Pre-Push Review Dry-Run" below). The pre-push hook files its
-  non-blocking findings as GitHub issues; reading them first means fixing
-  them instead of inheriting a backlog.
+□ Expect the pre-push hook to run one --mode=full-diff review of
+  base...HEAD. It must pass for the push to succeed, and it files no
+  GitHub issues. A whole-codebase scan is optional and on demand (see
+  "On-Demand Codebase Review" below).
 □ If subagent-driven-development was used: treat all subagent-reported reviews
   as UNVERIFIED. Before pushing, run a full-diff adversarial review manually:
     git diff main..HEAD | claude --agent adversarial-reviewer -p --tools ""
@@ -87,36 +87,40 @@ prevented it.
 
 ---
 
-## Pre-Push Review Dry-Run
+## On-Demand Codebase Review
 
-The pre-push hook runs a whole-codebase review and **files every non-blocking
-finding as a GitHub issue**. Learning about findings after the push means
-inheriting them as a backlog; running the same reviewer first means fixing
-them.
+The pre-push hook runs one `--mode=full-diff` review of the `base...HEAD` diff.
+It must pass for the push to succeed, and it files nothing: no push creates a
+GitHub issue. `--mode=codebase` was removed from the push path (dev-env
+`docs/plans/2026-08-26-review-pipeline-redesign-design.md`), because a
+whole-codebase scan hunts pre-existing defects that do not change between
+pushes. The mode still exists in `run-review.sh` for weekly and on-demand use.
 
-Run the reviewer the hook would run, with `--no-file` so it prints findings
-instead of filing them:
+To scan on demand without filing issues, pass `--no-file` so findings print
+instead:
 
 ```bash
 git diff origin/main...HEAD > /tmp/dryrev-diff.txt
 ~/.claude/hooks/run-review.sh --mode=codebase --no-file \
   < /tmp/dryrev-diff.txt > /tmp/dryrev-out.txt 2>/tmp/dryrev-err.txt
 
-grep -c 'NON_BLOCKING_ISSUE:' /tmp/dryrev-out.txt   # 0 means nothing will be filed
+grep -c 'NON_BLOCKING_ISSUE:' /tmp/dryrev-out.txt   # count of findings
 cat /tmp/dryrev-out.txt
 ```
 
-Fix what it reports, commit, re-run until the count is 0, then push.
+This is optional. It is not a preview of the push: the push runs a different
+mode, so a clean codebase scan does not make the push a cache hit.
 
 `REVIEW_NO_FILE=1` in the environment does the same thing, for cases where the
-reviewer is invoked indirectly and you cannot add a flag.
+reviewer is invoked indirectly and you cannot add a flag. Without either, a
+codebase run files its non-blocking findings as GitHub issues.
 
 **What `--no-file` does:** findings print to stdout in the same
 `NON_BLOCKING_ISSUE:` / `END_ISSUE` block format the reviewer emits, and no
 issue is filed. Review narration stays on stderr, so redirecting stdout gives
 you the findings alone. The rest of the run is unchanged: the reviewer's
-environment probes still run, so a dry-run is the same review a real push
-would get.
+environment probes still run, so a `--no-file` run is the same review a filing
+codebase run would get.
 
 **Why not the old `gh` stub:** the previous procedure put a failing `gh` on
 PATH. That worked, but it broke *every* `gh` call — including the reviewer's
@@ -124,10 +128,6 @@ own environment probes (`_repo_has_issues_enabled`, repo-owner detection) —
 so a stubbed run was not guaranteed to be the same review as a real one. It
 also could not be enforced or detected, because the suppression lived outside
 the tool. See #415.
-
-**Bonus:** the review cache is keyed on the diff hash, so a clean dry-run makes
-the real push a cache hit — it reports "Codebase review cached: identical diff
-previously passed" and does not re-review.
 
 ### Treat findings as claims, not facts
 

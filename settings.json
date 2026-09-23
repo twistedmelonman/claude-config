@@ -21,7 +21,6 @@
     "comprehensive-review@claude-code-workflows": true,
     "debugging-toolkit@claude-code-workflows": false,
     "dependency-management@claude-code-workflows": false,
-    "dumbify@dumbify": true,
     "error-debugging@claude-code-workflows": false,
     "frontend-design@claude-plugins-official": false,
     "frontend-mobile-development@claude-code-workflows": false,
@@ -61,12 +60,6 @@
       "source": {
         "repo": "anthropics/claude-plugins-official",
         "source": "github"
-      }
-    },
-    "dumbify": {
-      "source": {
-        "source": "git",
-        "url": "https://github.com/smartwatermelon/dumbify.git"
       }
     },
     "i-have-adhd": {
