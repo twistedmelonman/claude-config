@@ -38,6 +38,8 @@ calibration-samples
 feedback
 personify-evidence
 usage-data
+gate-review
+state
 
 # Files
 .claude.json

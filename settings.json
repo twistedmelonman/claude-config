@@ -4,7 +4,8 @@
   "alwaysThinkingEnabled": false,
   "attribution": {
     "commit": "",
-    "pr": ""
+    "pr": "",
+    "sessionUrl": false
   },
   "autoCompactWindow": 400000,
   "autoContinueAtUsageLimit": true,
