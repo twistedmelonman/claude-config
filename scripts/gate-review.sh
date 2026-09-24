@@ -315,7 +315,8 @@ _prune_expired() {
   now="$(date +%s)"
   for approval in "${APPROVED}"/*; do
     [[ -f "${approval}" ]] || continue
-    mtime="$(stat -f %m "${approval}" 2>/dev/null)" || continue
+    # GNU first: GNU `stat -f %m` fails but still prints filesystem info to stdout.
+    mtime="$(stat -c %Y "${approval}" 2>/dev/null || stat -f %m "${approval}" 2>/dev/null)" || continue
     if ((now - mtime > APPROVAL_TTL)); then
       rm -f "${approval}"
     fi

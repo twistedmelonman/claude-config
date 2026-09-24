@@ -356,7 +356,8 @@ _age_minutes() {
   # UTC on both sides, so a DST change cannot shift the age by an hour.
   local now stamp
   now="$(date +%s)" || return 1
-  stamp="$(TZ=UTC0 date -r "$((now - $2 * 60))" +%Y%m%d%H%M.%S)" || return 1
+  stamp="$(TZ=UTC0 date -r "$((now - $2 * 60))" +%Y%m%d%H%M.%S 2>/dev/null ||
+    TZ=UTC0 date -d "@$((now - $2 * 60))" +%Y%m%d%H%M.%S)" || return 1
   TZ=UTC0 touch -t "${stamp}" "$1"
 }
 
