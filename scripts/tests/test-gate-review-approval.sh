@@ -46,6 +46,14 @@ _load() {
   # set -u if unset. Shellcheck flags it unused because only sourced code reads
   # it; export keeps both satisfied.
   export PENDING="${GATE_DIR}/pending"
+  # The TTL constant sits above _die(), outside the sed range. Take the real
+  # line rather than a copy, so the default under test is the shipped one.
+  local ttl_line
+  ttl_line="$(grep -m1 '^APPROVAL_TTL=' "${GATE}")" || {
+    echo "no APPROVAL_TTL line in ${GATE}" >&2
+    exit 1
+  }
+  eval "${ttl_line}"
 }
 
 _batch() {
@@ -338,6 +346,94 @@ if _cmd_check "${V}"; then
   _ok "verdict header lines leave approved bytes unchanged"
 else
   _no "verdict header lines leave approved bytes unchanged"
+fi
+
+# --- approvals expire after APPROVAL_TTL -------------------------------------
+
+# An approval used to last until cleared by hand, so text approved days ago
+# could still be replayed. Age is the approved file's mtime.
+_age_minutes() {
+  # UTC on both sides, so a DST change cannot shift the age by an hour.
+  local now stamp
+  now="$(date +%s)" || return 1
+  stamp="$(TZ=UTC0 date -r "$((now - $2 * 60))" +%Y%m%d%H%M.%S 2>/dev/null ||
+    TZ=UTC0 date -d "@$((now - $2 * 60))" +%Y%m%d%H%M.%S)" || return 1
+  TZ=UTC0 touch -t "${stamp}" "$1"
+}
+
+TTL_BODY="${TMP}/ttl.txt"
+printf 'fix(ttl): body under test\n' >"${TTL_BODY}"
+
+rm -f "${APPROVED:?}"/*
+cp "${TTL_BODY}" "${APPROVED}/fresh"
+if _cmd_check "${TTL_BODY}"; then
+  _ok "a fresh approval verifies"
+else
+  _no "a fresh approval verifies"
+fi
+
+rm -f "${APPROVED:?}"/*
+cp "${TTL_BODY}" "${APPROVED}/at-29"
+_age_minutes "${APPROVED}/at-29" 29
+if _cmd_check "${TTL_BODY}"; then
+  _ok "a 29-minute-old approval still verifies"
+else
+  _no "a 29-minute-old approval still verifies"
+fi
+
+rm -f "${APPROVED:?}"/*
+cp "${TTL_BODY}" "${APPROVED}/at-31"
+_age_minutes "${APPROVED}/at-31" 31
+if _cmd_check "${TTL_BODY}"; then
+  _no "a 31-minute-old approval is refused"
+else
+  _ok "a 31-minute-old approval is refused"
+fi
+if [[ -e "${APPROVED}/at-31" ]]; then
+  _no "check deletes the expired approval"
+else
+  _ok "check deletes the expired approval"
+fi
+
+# The override goes through the real entry point, so it exercises the
+# constant's own line rather than the value _load copied.
+rm -f "${APPROVED:?}"/*
+cp "${TTL_BODY}" "${APPROVED}/at-2"
+_age_minutes "${APPROVED}/at-2" 2
+if GATE_REVIEW_APPROVAL_TTL=60 bash "${GATE}" check "${TTL_BODY}"; then
+  _no "GATE_REVIEW_APPROVAL_TTL=60 refuses a 2-minute-old approval"
+else
+  _ok "GATE_REVIEW_APPROVAL_TTL=60 refuses a 2-minute-old approval"
+fi
+# The run above pruned it, so put it back at the same age.
+cp "${TTL_BODY}" "${APPROVED}/at-2"
+_age_minutes "${APPROVED}/at-2" 2
+if bash "${GATE}" check "${TTL_BODY}"; then
+  _ok "the default TTL accepts the same 2-minute-old approval"
+else
+  _no "the default TTL accepts the same 2-minute-old approval"
+fi
+
+# stage prunes too, so approved/ stops growing even when nothing is checked.
+rm -f "${APPROVED:?}"/* "${PENDING:?}"/*
+printf 'stale\n' >"${APPROVED}/stale"
+_age_minutes "${APPROVED}/stale" 31
+printf 'fresh\n' >"${APPROVED}/fresh"
+_seed_record "${TTL_BODY}" '{"status":"PASS","verdict":"Human","fraction_ai":0.0,"word_count":4}'
+if bash "${GATE}" stage ttl-item "${TTL_BODY}" >/dev/null 2>&1; then
+  _ok "stage succeeds with expired approvals present"
+else
+  _no "stage succeeds with expired approvals present"
+fi
+if [[ ! -e "${APPROVED}/stale" ]]; then
+  _ok "stage prunes an expired approval"
+else
+  _no "stage prunes an expired approval"
+fi
+if [[ -f "${APPROVED}/fresh" ]]; then
+  _ok "stage leaves a fresh approval standing"
+else
+  _no "stage leaves a fresh approval standing"
 fi
 
 echo "--- ${pass} passed, ${fail} failed"
