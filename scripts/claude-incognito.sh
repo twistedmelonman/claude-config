@@ -15,9 +15,18 @@
 # our own --session-id tells us exactly which directory that is, so the EXIT
 # trap can remove it.
 #
-# The cleanup is deliberately `rmdir`, never `rm -rf`: if claude ever starts
-# putting files there, deleting them silently would hide the change. A
-# non-empty directory is left in place and named on stderr instead.
+# The session-env cleanup is deliberately `rmdir`, never `rm -rf`: if claude
+# ever starts putting files there, deleting them silently would hide the
+# change. A non-empty directory is left in place and named on stderr instead.
+#
+# Two other per-session directories do hold content, so they get `rm -rf`,
+# matched only by our own session id:
+#   ${CLAUDE_CONFIG_DIR:-~/.claude}/projects/<cwd-slug>/<session-id>/
+#     Large tool results spill to tool-results/ here even with
+#     --no-session-persistence (a 65 KB Slack search did, claude 2.1.281).
+#   ${CLAUDE_CODE_TMPDIR:-/tmp}/claude-<uid>/<cwd-slug>/<session-id>/
+#     Per-session scratch and task output.
+# The cwd slug is claude's internal encoding, so both are globbed as */<id>.
 #
 # All user arguments are passed to `claude -p` verbatim, as separate args.
 #
@@ -49,8 +58,9 @@ Usage: claude-incognito [claude -p args...] "prompt"
        echo "prompt" | claude-incognito [claude -p args...]
 
 Runs `claude -p --no-session-persistence` with a throwaway session id and
-removes the empty session-env directory afterwards, so the run leaves no
-transcript, no /resume entry, and no history.jsonl entry.
+removes that session's session-env, spilled tool results, and tmp directory
+afterwards, so the run leaves no transcript, no /resume entry, no
+history.jsonl entry, and no tool output on disk.
 
 Print mode only. Every argument is passed through to `claude -p`.
 
@@ -77,7 +87,14 @@ if [[ $# -eq 0 && -t 0 ]]; then
 fi
 
 sid="$(uuidgen | tr '[:upper:]' '[:lower:]')"
-session_env_dir="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}/session-env/${sid}"
+# The rm -rf below is keyed on this value, so refuse anything but a full UUID.
+if [[ ! "${sid}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+  printf 'claude-incognito: uuidgen returned an unexpected value: %s\n' "${sid}" >&2
+  exit 1
+fi
+config_dir="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}"
+session_env_dir="${config_dir}/session-env/${sid}"
+tmp_root="${CLAUDE_CODE_TMPDIR:-/tmp}/claude-$(id -u)"
 
 cleanup() {
   # Every command here is guarded: an unguarded failure inside an EXIT trap
@@ -88,6 +105,14 @@ cleanup() {
         "${session_env_dir}" >&2 || true
     fi
   fi
+  local d
+  for d in "${config_dir}/projects/"*/"${sid}" "${tmp_root}/"*/"${sid}"; do
+    if [[ -e "${d}" || -L "${d}" ]]; then
+      if ! rm -rf -- "${d}" 2>/dev/null; then
+        printf 'claude-incognito: could not remove: %s\n' "${d}" >&2 || true
+      fi
+    fi
+  done
 }
 # The trap covers interrupts and errexit. The normal path below disarms it and
 # calls cleanup directly, so cleanup runs exactly once either way.
