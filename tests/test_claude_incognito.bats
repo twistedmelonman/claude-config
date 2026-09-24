@@ -30,6 +30,7 @@ setup() {
 #!/usr/bin/env bash
 : >"${ARGV_FILE}"
 for a in "$@"; do printf '%s\n' "${a}" >>"${ARGV_FILE}"; done
+printf '%s\n' "${ENABLE_CLAUDEAI_MCP_SERVERS-<unset>}" >"${ARGV_FILE}.claudeai"
 sid=""
 prev=""
 for a in "$@"; do
@@ -162,7 +163,54 @@ WRAP
 @test "no args with piped stdin passes through to claude -p" {
   run bash -c 'printf "hi\n" | STUB_READ_STDIN=1 bash "$1"' _ "${SCRIPT}"
   [[ "${status}" -eq 0 ]]
-  # Exactly the four wrapper args: -p, --no-session-persistence, --session-id, <uuid>.
-  [[ "$(wc -l <"${ARGV_FILE}" | tr -d ' ')" -eq 4 ]]
+  # Exactly the six wrapper args: -p, --no-session-persistence,
+  # --session-id, <uuid>, --permission-mode, bypassPermissions.
+  [[ "$(wc -l <"${ARGV_FILE}" | tr -d ' ')" -eq 6 ]]
   [[ "$(cat "${ARGV_FILE}.stdin")" == "hi" ]]
+}
+
+@test "defaults to --permission-mode bypassPermissions" {
+  run bash "${SCRIPT}" "hello"
+  [[ "${status}" -eq 0 ]]
+  # The mode value directly follows the flag.
+  [[ "$(awk 'prev == "--permission-mode" { print; exit } { prev = $0 }' "${ARGV_FILE}")" == "bypassPermissions" ]]
+}
+
+@test "caller's --permission-mode replaces the default" {
+  run bash "${SCRIPT}" --permission-mode plan "hello"
+  [[ "${status}" -eq 0 ]]
+  [[ "$(grep -cx -- "--permission-mode" "${ARGV_FILE}")" -eq 1 ]]
+  run ! grep -qx -- "bypassPermissions" "${ARGV_FILE}"
+  grep -qx -- "plan" "${ARGV_FILE}"
+}
+
+@test "caller's --permission-mode=<mode> replaces the default" {
+  run bash "${SCRIPT}" --permission-mode=acceptEdits "hello"
+  [[ "${status}" -eq 0 ]]
+  run ! grep -qx -- "--permission-mode" "${ARGV_FILE}"
+  run ! grep -qx -- "bypassPermissions" "${ARGV_FILE}"
+}
+
+@test "caller's --dangerously-skip-permissions replaces the default" {
+  run bash "${SCRIPT}" --dangerously-skip-permissions "hello"
+  [[ "${status}" -eq 0 ]]
+  run ! grep -qx -- "--permission-mode" "${ARGV_FILE}"
+}
+
+@test "a prompt that mentions --permission-mode keeps the default" {
+  run bash "${SCRIPT}" "explain --permission-mode plan"
+  [[ "${status}" -eq 0 ]]
+  grep -qx -- "bypassPermissions" "${ARGV_FILE}"
+}
+
+@test "turns claude.ai connectors off when the caller has not set it" {
+  run env -u ENABLE_CLAUDEAI_MCP_SERVERS bash "${SCRIPT}" "hello"
+  [[ "${status}" -eq 0 ]]
+  [[ "$(cat "${ARGV_FILE}.claudeai")" == "false" ]]
+}
+
+@test "caller's ENABLE_CLAUDEAI_MCP_SERVERS is kept" {
+  ENABLE_CLAUDEAI_MCP_SERVERS=true run bash "${SCRIPT}" "hello"
+  [[ "${status}" -eq 0 ]]
+  [[ "$(cat "${ARGV_FILE}.claudeai")" == "true" ]]
 }

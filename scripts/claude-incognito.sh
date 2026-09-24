@@ -21,6 +21,23 @@
 #
 # All user arguments are passed to `claude -p` verbatim, as separate args.
 #
+# PERMISSIONS
+# -----------
+# Print mode has nobody to answer a permission prompt, so in the default mode
+# every tool call that would prompt (MCP tools included) is denied. The model
+# then tends to misreport that as "needs authentication". Unless the caller
+# passes --permission-mode or --dangerously-skip-permissions, this wrapper
+# adds `--permission-mode bypassPermissions`, the same as the `clauded` alias.
+# PreToolUse hooks still run in that mode.
+#
+# CONNECTORS
+# ----------
+# In print mode the claude.ai Slack connector and the Slack plugin's MCP
+# server suppress each other as duplicates, so neither loads (claude 2.1.281,
+# visible in --debug-file output). Turning claude.ai connectors off keeps the
+# plugin server. The cost is the claude.ai-only connectors (Claude Docs).
+# Set ENABLE_CLAUDEAI_MCP_SERVERS=true to get them back and lose Slack.
+#
 # CLAUDE_BIN overrides the claude binary (default: claude). Tests use it to
 # substitute a stub.
 
@@ -36,6 +53,11 @@ removes the empty session-env directory afterwards, so the run leaves no
 transcript, no /resume entry, and no history.jsonl entry.
 
 Print mode only. Every argument is passed through to `claude -p`.
+
+Runs with --permission-mode bypassPermissions unless you pass
+--permission-mode or --dangerously-skip-permissions yourself.
+Sets ENABLE_CLAUDEAI_MCP_SERVERS=false unless already set, so the Slack
+plugin loads; set it to true to keep claude.ai connectors instead.
 EOF
 }
 
@@ -71,8 +93,22 @@ cleanup() {
 # calls cleanup directly, so cleanup runs exactly once either way.
 trap cleanup EXIT
 
+perm_args=(--permission-mode bypassPermissions)
+for arg in "$@"; do
+  case "${arg}" in
+    --permission-mode | --permission-mode=* | --dangerously-skip-permissions)
+      perm_args=()
+      break
+      ;;
+    *) ;;
+  esac
+done
+
+export ENABLE_CLAUDEAI_MCP_SERVERS="${ENABLE_CLAUDEAI_MCP_SERVERS:-false}"
+
 rc=0
-"${CLAUDE_BIN:-claude}" -p --no-session-persistence --session-id "${sid}" "$@" || rc=$?
+"${CLAUDE_BIN:-claude}" -p --no-session-persistence --session-id "${sid}" \
+  "${perm_args[@]}" "$@" || rc=$?
 trap - EXIT
 cleanup
 exit "${rc}"
