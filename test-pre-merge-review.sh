@@ -60,7 +60,17 @@ echo ""
 
 # Verify safe arithmetic patterns (set -e compatible)
 echo "Verifying safe arithmetic patterns (set -e compatible):"
-if grep -n '((' ~/.claude/hooks/pre-merge-review.sh | grep -qE '\+\+|--|\+='; then
+# Inspect only the text inside ((...)) / $((...)), not the whole line: a line
+# like `log_error "git config --global ... $((X * 2))"` carries `--` as a CLI
+# flag, which is not arithmetic. The pattern matches `((`, then any run that
+# does not contain `))`, then `))`, so one level of inner parens such as
+# `$(( (a + b) * 2 ))` is still captured.
+# Limitations: an expression split across lines is not seen (grep is
+# line-based), and with 2+ levels of nesting the match stops at the first `))`.
+# Captured into a variable rather than piped into `grep -q`: under pipefail,
+# `grep -q` exiting early can SIGPIPE the producer and turn a hit into a miss.
+arith_exprs="$(grep -oE '\(\(([^)]|\)[^)])*\)\)' ~/.claude/hooks/pre-merge-review.sh || true)"
+if grep -qE '\+\+|--|\+=' <<<"${arith_exprs}"; then
   echo -e "${RED}✗${NC} Found unsafe arithmetic operators (++, --, +=)"
   TESTS_FAILED=$((TESTS_FAILED + 1))
 else
