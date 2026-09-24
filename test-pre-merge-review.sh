@@ -52,7 +52,7 @@ assert_false() {
 # so `is_security_critical` is available for the test block that uses it.
 eval "$(sed -n '/^# --- File Classification Functions/,/^# --- Diff Summarization Functions/p' ~/.claude/hooks/pre-merge-review.sh | grep -v '^# ---' || true)"
 eval "$(sed -n '/^# --- Diff Summarization Functions/,/^# --- Non-Blocking Issue Functions/p' ~/.claude/hooks/pre-merge-review.sh | grep -v '^# ---' || true)"
-# shellcheck source=hooks/lib-review-issues.sh
+# shellcheck source=/dev/null
 source ~/.claude/hooks/lib-review-issues.sh
 
 echo "Running pre-merge-review.sh function tests..."
