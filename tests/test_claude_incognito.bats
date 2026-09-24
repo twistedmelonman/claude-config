@@ -17,7 +17,8 @@ setup() {
   export TMPDIR_TEST
   export HOME="${TMPDIR_TEST}/home"
   export CLAUDE_CONFIG_DIR="${TMPDIR_TEST}/config"
-  mkdir -p "${HOME}" "${CLAUDE_CONFIG_DIR}"
+  export CLAUDE_CODE_TMPDIR="${TMPDIR_TEST}/tmp"
+  mkdir -p "${HOME}" "${CLAUDE_CONFIG_DIR}" "${CLAUDE_CODE_TMPDIR}"
 
   SCRIPT="${BATS_TEST_DIRNAME}/../scripts/claude-incognito.sh"
   ARGV_FILE="${TMPDIR_TEST}/argv"
@@ -41,6 +42,13 @@ if [[ -n "${sid}" ]]; then
   mkdir -p "${CLAUDE_CONFIG_DIR}/session-env/${sid}"
   if [[ "${STUB_LEAVE_FILE:-0}" == 1 ]]; then
     touch "${CLAUDE_CONFIG_DIR}/session-env/${sid}/leftover"
+  fi
+  # Simulate a large tool result spilled to disk, and per-session tmp output.
+  if [[ "${STUB_SPILL:-0}" == 1 ]]; then
+    mkdir -p "${CLAUDE_CONFIG_DIR}/projects/-some-cwd/${sid}/tool-results"
+    echo secret >"${CLAUDE_CONFIG_DIR}/projects/-some-cwd/${sid}/tool-results/mcp-out.txt"
+    mkdir -p "${CLAUDE_CODE_TMPDIR}/claude-$(id -u)/-some-cwd/${sid}/tasks"
+    echo out >"${CLAUDE_CODE_TMPDIR}/claude-$(id -u)/-some-cwd/${sid}/tasks/t.output"
   fi
 fi
 # Simulate an interrupt: signal the wrapper while "claude" is still running.
@@ -213,4 +221,54 @@ WRAP
   ENABLE_CLAUDEAI_MCP_SERVERS=true run bash "${SCRIPT}" "hello"
   [[ "${status}" -eq 0 ]]
   [[ "$(cat "${ARGV_FILE}.claudeai")" == "true" ]]
+}
+
+@test "spilled tool results under projects/<cwd>/<sid> are removed" {
+  STUB_SPILL=1 run bash "${SCRIPT}" "hello"
+  [[ "${status}" -eq 0 ]]
+  local sid
+  sid="$(recorded_sid)"
+  [[ -n "${sid}" ]]
+  [[ -d "${CLAUDE_CONFIG_DIR}/projects/-some-cwd" ]]
+  [[ ! -e "${CLAUDE_CONFIG_DIR}/projects/-some-cwd/${sid}" ]]
+}
+
+@test "per-session tmp dir under claude-<uid>/<cwd>/<sid> is removed" {
+  STUB_SPILL=1 run bash "${SCRIPT}" "hello"
+  [[ "${status}" -eq 0 ]]
+  local sid
+  sid="$(recorded_sid)"
+  [[ -n "${sid}" ]]
+  [[ ! -e "${CLAUDE_CODE_TMPDIR}/claude-$(id -u)/-some-cwd/${sid}" ]]
+}
+
+@test "other sessions' projects and tmp dirs are left alone" {
+  local other="11111111-2222-3333-4444-555555555555"
+  mkdir -p "${CLAUDE_CONFIG_DIR}/projects/-some-cwd/${other}/tool-results"
+  mkdir -p "${CLAUDE_CODE_TMPDIR}/claude-$(id -u)/-some-cwd/${other}"
+  touch "${CLAUDE_CONFIG_DIR}/projects/-some-cwd/${other}.jsonl"
+  STUB_SPILL=1 run bash "${SCRIPT}" "hello"
+  [[ "${status}" -eq 0 ]]
+  [[ -d "${CLAUDE_CONFIG_DIR}/projects/-some-cwd/${other}/tool-results" ]]
+  [[ -d "${CLAUDE_CODE_TMPDIR}/claude-$(id -u)/-some-cwd/${other}" ]]
+  [[ -f "${CLAUDE_CONFIG_DIR}/projects/-some-cwd/${other}.jsonl" ]]
+}
+
+@test "spill cleanup also runs when the wrapper is killed mid-run" {
+  STUB_SPILL=1 STUB_KILL_PARENT=1 run bash "${SCRIPT}" "hello"
+  [[ "${status}" -eq 143 ]]
+  local sid
+  sid="$(recorded_sid)"
+  [[ -n "${sid}" ]]
+  [[ ! -e "${CLAUDE_CONFIG_DIR}/projects/-some-cwd/${sid}" ]]
+  [[ ! -e "${CLAUDE_CODE_TMPDIR}/claude-$(id -u)/-some-cwd/${sid}" ]]
+}
+
+@test "a malformed uuidgen value stops the run before claude starts" {
+  mkdir -p "${TMPDIR_TEST}/bin"
+  printf '#!/usr/bin/env bash\necho "*"\n' >"${TMPDIR_TEST}/bin/uuidgen"
+  chmod +x "${TMPDIR_TEST}/bin/uuidgen"
+  PATH="${TMPDIR_TEST}/bin:${PATH}" run bash "${SCRIPT}" "hello"
+  [[ "${status}" -eq 1 ]]
+  [[ ! -e "${ARGV_FILE}" ]]
 }
