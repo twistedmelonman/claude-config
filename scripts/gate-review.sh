@@ -40,6 +40,7 @@ PENDING="${GATE_DIR}/pending"
 APPROVED="${GATE_DIR}/approved"
 EDITOR_APP="${GATE_REVIEW_EDITOR:-BBEdit}"
 POLL_TIMEOUT="${GATE_REVIEW_TIMEOUT:-1800}"
+APPROVAL_TTL="${GATE_REVIEW_APPROVAL_TTL:-1800}"
 
 mkdir -p "${PENDING}" "${APPROVED}"
 
@@ -125,6 +126,7 @@ _cmd_stage() {
   # The reviewer should see what Pangram said before approving, so a text the
   # check never saw is not staged. Any result counts, FAIL and SKIPPED
   # included: this proves the check ran, it does not require a pass.
+  _prune_expired
   record="$(_record_path "${file}")"
   if [[ ! -f "${record}" ]]; then
     {
@@ -263,7 +265,8 @@ _split_batch() {
   # message an hour later, and the PR body's approval was gone by push time,
   # with nothing to show it had ever been granted. Each name is instead cleared
   # by _write_approved as it is rewritten, so a batch revokes only what it
-  # restates. ABORT still wipes everything -- that is the safe direction.
+  # restates, and anything older than APPROVAL_TTL expires on its own. ABORT
+  # still wipes everything -- that is the safe direction.
 
   # `|| [[ -n "${line}" ]]` catches a final line with no trailing newline.
   # Without it `read` returns false on that last line and the loop discards it,
@@ -304,13 +307,30 @@ _write_approved() {
   rm -f "${PENDING:?}/${name}"
 }
 
+# Age comes from mtime, not a TIMESTAMP line as in merge-lock: the approved
+# file IS the hashed body, so any line added to it would break `check`.
+# A file whose mtime cannot be read is left alone rather than guessed at.
+_prune_expired() {
+  local now approval mtime
+  now="$(date +%s)"
+  for approval in "${APPROVED}"/*; do
+    [[ -f "${approval}" ]] || continue
+    mtime="$(stat -f %m "${approval}" 2>/dev/null)" || continue
+    if ((now - mtime > APPROVAL_TTL)); then
+      rm -f "${approval}"
+    fi
+  done
+}
+
 # Accept if the bytes match ANY approval. A match is not consumed: re-posting
 # the same approved body (a `gh pr edit` after a `gh pr create`) is legitimate
-# and must not require a second review of identical text. The cost is that
-# approved/ grows until cleared by hand, which is visible and harmless --
-# whereas consuming a match would block a retry after a transient push failure.
+# and must not require a second review of identical text, and consuming a match
+# would block a retry after a transient push failure. What bounds the replay is
+# age instead: an approval expires APPROVAL_TTL (30 minutes) after it was
+# written, the same window merge-lock gives a lock.
 _cmd_check() {
   local file="$1" want
+  _prune_expired
   [[ -f "${file}" ]] || return 1
   want="$(_hash "${file}")"
   local approval
