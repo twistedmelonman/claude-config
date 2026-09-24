@@ -171,9 +171,10 @@ WRAP
 @test "no args with piped stdin passes through to claude -p" {
   run bash -c 'printf "hi\n" | STUB_READ_STDIN=1 bash "$1"' _ "${SCRIPT}"
   [[ "${status}" -eq 0 ]]
-  # Exactly the six wrapper args: -p, --no-session-persistence,
-  # --session-id, <uuid>, --permission-mode, bypassPermissions.
-  [[ "$(wc -l <"${ARGV_FILE}" | tr -d ' ')" -eq 6 ]]
+  # Exactly the eight wrapper args: -p, --no-session-persistence,
+  # --session-id, <uuid>, --permission-mode, bypassPermissions,
+  # --settings, <deny json>.
+  [[ "$(wc -l <"${ARGV_FILE}" | tr -d ' ')" -eq 8 ]]
   [[ "$(cat "${ARGV_FILE}.stdin")" == "hi" ]]
 }
 
@@ -211,10 +212,39 @@ WRAP
   grep -qx -- "bypassPermissions" "${ARGV_FILE}"
 }
 
-@test "turns claude.ai connectors off when the caller has not set it" {
+@test "denies only the claude.ai Slack connector via --settings" {
+  run bash "${SCRIPT}" "hello"
+  [[ "${status}" -eq 0 ]]
+  # The object form; a bare string is ignored by claude.
+  [[ "$(awk 'prev == "--settings" { print; exit } { prev = $0 }' "${ARGV_FILE}")" \
+    == '{"deniedMcpServers":[{"serverName":"claude.ai Slack"}]}' ]]
+}
+
+@test "leaves claude.ai connectors on (no ENABLE_CLAUDEAI_MCP_SERVERS set)" {
   run env -u ENABLE_CLAUDEAI_MCP_SERVERS bash "${SCRIPT}" "hello"
   [[ "${status}" -eq 0 ]]
-  [[ "$(cat "${ARGV_FILE}.claudeai")" == "false" ]]
+  [[ "$(cat "${ARGV_FILE}.claudeai")" == "<unset>" ]]
+}
+
+@test "caller's --settings replaces the default" {
+  run bash "${SCRIPT}" --settings /tmp/mine.json "hello"
+  [[ "${status}" -eq 0 ]]
+  [[ "$(grep -cx -- "--settings" "${ARGV_FILE}")" -eq 1 ]]
+  run ! grep -q -- "deniedMcpServers" "${ARGV_FILE}"
+  grep -qx -- "/tmp/mine.json" "${ARGV_FILE}"
+}
+
+@test "caller's --settings=<file> replaces the default" {
+  run bash "${SCRIPT}" --settings=/tmp/mine.json "hello"
+  [[ "${status}" -eq 0 ]]
+  run ! grep -qx -- "--settings" "${ARGV_FILE}"
+  run ! grep -q -- "deniedMcpServers" "${ARGV_FILE}"
+}
+
+@test "a prompt that mentions --settings keeps the default" {
+  run bash "${SCRIPT}" "explain --settings usage"
+  [[ "${status}" -eq 0 ]]
+  grep -q -- "deniedMcpServers" "${ARGV_FILE}"
 }
 
 @test "caller's ENABLE_CLAUDEAI_MCP_SERVERS is kept" {

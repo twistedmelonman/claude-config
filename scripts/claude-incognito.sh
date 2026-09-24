@@ -43,9 +43,13 @@
 # ----------
 # In print mode the claude.ai Slack connector and the Slack plugin's MCP
 # server suppress each other as duplicates, so neither loads (claude 2.1.281,
-# visible in --debug-file output). Turning claude.ai connectors off keeps the
-# plugin server. The cost is the claude.ai-only connectors (Claude Docs).
-# Set ENABLE_CLAUDEAI_MCP_SERVERS=true to get them back and lose Slack.
+# visible in --debug-file output). Unless the caller passes --settings, this
+# wrapper adds a --settings value that denies only the claude.ai Slack
+# connector, so the plugin's Slack server loads and the other claude.ai
+# connectors (Claude Docs) stay available. claude prints "claude.ai MCP server
+# blocked by enterprise policy: claude.ai Slack" on stderr each run; that is
+# the deny working. deniedMcpServers needs the {"serverName": ...} object
+# form: a bare string is silently ignored (tested on 2.1.281).
 #
 # CLAUDE_BIN overrides the claude binary (default: claude). Tests use it to
 # substitute a stub.
@@ -66,8 +70,9 @@ Print mode only. Every argument is passed through to `claude -p`.
 
 Runs with --permission-mode bypassPermissions unless you pass
 --permission-mode or --dangerously-skip-permissions yourself.
-Sets ENABLE_CLAUDEAI_MCP_SERVERS=false unless already set, so the Slack
-plugin loads; set it to true to keep claude.ai connectors instead.
+Denies the claude.ai Slack connector with --settings unless you pass
+--settings yourself, so the Slack plugin and Claude Docs both load. If you
+pass --settings, include that deny in it to keep Slack.
 EOF
 }
 
@@ -129,11 +134,20 @@ for arg in "$@"; do
   esac
 done
 
-export ENABLE_CLAUDEAI_MCP_SERVERS="${ENABLE_CLAUDEAI_MCP_SERVERS:-false}"
+settings_args=(--settings '{"deniedMcpServers":[{"serverName":"claude.ai Slack"}]}')
+for arg in "$@"; do
+  case "${arg}" in
+    --settings | --settings=*)
+      settings_args=()
+      break
+      ;;
+    *) ;;
+  esac
+done
 
 rc=0
 "${CLAUDE_BIN:-claude}" -p --no-session-persistence --session-id "${sid}" \
-  "${perm_args[@]}" "$@" || rc=$?
+  "${perm_args[@]}" "${settings_args[@]}" "$@" || rc=$?
 trap - EXIT
 cleanup
 exit "${rc}"
