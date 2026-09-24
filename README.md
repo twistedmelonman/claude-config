@@ -40,9 +40,14 @@ so changes show up as unstaged diffs in `~/Developer/claude-config`.
 |------|--------|
 | `--dry-run` | Show what would be done without making changes |
 | `--repair` | Fix broken symlinks (atomic write recovery) |
+| `--sync` | Repair, then link newly added files |
 | `--help` | Show usage |
 
 The script is idempotent — safe to run repeatedly.
+
+Every mode also prunes stale links: a link in `~/.claude` that points into
+this repo at a file that no longer exists is removed, along with any
+directory that leaves empty. Links pointing anywhere else are never touched.
 
 ### Ongoing maintenance: update-tools.sh
 

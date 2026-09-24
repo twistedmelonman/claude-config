@@ -271,8 +271,62 @@ repair_symlinks() {
   fi
 }
 
+# ============================================================================
+# 4b. PRUNE STALE SYMLINKS
+# ============================================================================
+# The main loop only ever creates links. When a file (or a whole skill) is
+# deleted from the repo, its link stays behind in DEPLOY_DIR pointing at
+# nothing, on every machine that ever ran install.sh. Remove those links, then
+# remove any directory the prune left empty. Every mode runs this, --repair
+# included: update-tools.sh (the `updates` path) only ever calls --repair.
+#
+# Only links whose target is inside REPO_DIR AND missing are removed. That
+# prefix test is what keeps this away from links install.sh does not own
+# (plugin caches, claude.ai-synced skills, debug/latest), dangling or not.
+# The -prune list only skips large runtime trees for speed; correctness does
+# not depend on it.
+
+prune_stale_symlinks() {
+  local link target dir
+  local prune_dirs=()
+
+  while IFS= read -r -d '' link; do
+    target="$(readlink "${link}")" || continue
+    [[ "${target}" == "${REPO_DIR}/"* ]] || continue
+    [[ -e "${link}" ]] && continue
+
+    if [[ "${DRY_RUN}" == true ]]; then
+      _dry "Would remove stale symlink: ${link} -> ${target}"
+      would_install+=("prune:${link}")
+      continue
+    fi
+    if rm "${link}"; then
+      _ok "Removed stale symlink: ${link} -> ${target}"
+      installed+=("pruned:${link}")
+      prune_dirs+=("$(dirname "${link}")")
+    else
+      _err "Failed to remove stale symlink: ${link}"
+      failures+=("prune-failed:${link}")
+    fi
+  done < <(find "${DEPLOY_DIR}" \
+    \( -path "${DEPLOY_DIR}/plugins" -o -path "${DEPLOY_DIR}/projects" \
+    -o -path "${DEPLOY_DIR}/file-history" -o -path "${DEPLOY_DIR}/backups" \
+    -o -path "${DEPLOY_DIR}/shell-snapshots" \) -prune \
+    -o -type l -print0 2>/dev/null || true)
+
+  # Walk up from each pruned link's directory, removing directories that are
+  # now empty. rmdir refuses a non-empty directory, so user files keep theirs.
+  for dir in "${prune_dirs[@]+"${prune_dirs[@]}"}"; do
+    while [[ "${dir}" == "${DEPLOY_DIR}/"* ]] && rmdir "${dir}" 2>/dev/null; do
+      _ok "Removed empty directory: ${dir}"
+      dir="$(dirname "${dir}")"
+    done
+  done
+}
+
 if ${REPAIR_ONLY}; then
   repair_symlinks
+  prune_stale_symlinks
   exit 0
 fi
 
@@ -297,6 +351,9 @@ for file in "${_TRACKED_FILES[@]}"; do
 
   _ensure_symlink "${REPO_DIR}/${file}" "${DEPLOY_DIR}/${file}"
 done
+
+# Runs after the main loop so a file re-added to the repo is relinked first.
+prune_stale_symlinks
 
 # ============================================================================
 # 6. SUBMODULE SYMLINKS (directory-level)
