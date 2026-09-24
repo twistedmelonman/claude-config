@@ -46,7 +46,7 @@ entries are omitted here.
 | Event / matcher | Script |
 |-----------------|--------|
 | PreToolUse `Bash` | `~/.claude/scripts/hook-block-all.sh` (chain below) |
-| PreToolUse `Write`, `Edit` | `hook-block-merge-locks-write.sh`: blocks writes into `merge-locks/` and `gate-review/` |
+| PreToolUse `Write`, `Edit` | `hook-block-merge-locks-write.sh`: blocks writes into `merge-locks/`, `gate-review/`, and personify's `checks/` and `stamps/` |
 | PreToolUse `EnterWorktree` | `hook-block-enter-worktree.sh` |
 | PostToolUse `Bash\|Read` | `hook-redact-secret-output.py` |
 | Stop, SubagentStop | `hook-budget-guard.sh` |
@@ -54,7 +54,7 @@ entries are omitted here.
 `hook-block-all.sh` runs these in order and stops at the first block:
 
 1. `hook-block-secret-leak.sh` (first on purpose: the others log the full command when they block)
-2. `hook-block-gate-dir-write.sh`
+2. `hook-block-gate-dir-write.sh` (Bash-path writes into `merge-locks/`, `gate-review/`, and personify's `checks/` and `stamps/`)
 3. `hook-block-no-verify.sh`
 4. `hook-block-short-no-verify.sh`
 5. `hook-block-main-commit.sh`
@@ -78,6 +78,12 @@ Commit messages and PR/issue bodies need Andrew's visual approval.
   paths are blocked. PR and issue titles are not gated.
 - Enforced by `hook-block-personify.sh` for the Bash tool, and by
   `gh-wrapper.sh` (`_gh_wrapper_approval_gate`) for manual `gh` calls.
+- `stage` also refuses a file with no `~/.config/personify/checks/<sha256 of
+  raw bytes>.json` check record. Run `python3 <personify skill
+  dir>/scripts/pangram_check.py < <file>` on that exact file first; PASS,
+  FAIL, and SKIPPED records are all accepted.
+- `open` shows one Pangram line per item in the header, read from that
+  item's check record.
 
 ### Merge-Lock Subcommands
 

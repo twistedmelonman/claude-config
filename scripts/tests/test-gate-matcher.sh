@@ -155,6 +155,14 @@ _case "${DIRWRITE}" "tilde-spelled path into merge-locks" \
   "$(_b64 'cp /tmp/x ~/.claude/merge-locks/fake')" 2
 _case "${DIRWRITE}" "batch.txt is a gate file too" \
   "$(_b64 "echo '# STATUS: APPROVED' > ${HOME}/.claude/gate-review/batch.txt")" 2
+_case "${DIRWRITE}" "redirect into personify checks" \
+  "$(_b64 "echo '{}' > ${HOME}/.config/personify/checks/abc.json")" 2
+_case "${DIRWRITE}" "cp into personify checks" \
+  "$(_b64 "cp /tmp/x ${HOME}/.config/personify/checks/abc.json")" 2
+_case "${DIRWRITE}" "tee into personify stamps" \
+  "$(_b64 "echo x | tee ${HOME}/.config/personify/stamps/abc.json")" 2
+_case "${DIRWRITE}" "tilde-spelled redirect into personify checks" \
+  "$(_b64 "echo x > ~/.config/personify/checks/abc.json")" 2
 
 echo "=== dir-write: READS must ALLOW (exit 0) ==="
 # The whole point of the gate is `git commit -F <approved file>`. If reading
@@ -174,6 +182,12 @@ _case "${DIRWRITE}" "cp OUT of the approved dir" \
   "$(_b64 "cp ${HOME}/.claude/gate-review/approved/commit-1 /tmp/x")" 0
 _case "${DIRWRITE}" "unrelated cp" \
   "$(_b64 'cp /tmp/a /tmp/b')" 0
+_case "${DIRWRITE}" "cat a check record" \
+  "$(_b64 "cat ${HOME}/.config/personify/checks/abc.json")" 0
+_case "${DIRWRITE}" "the check itself names no record path" \
+  "$(_b64 'python3 /x/scripts/pangram_check.py < /tmp/body.md')" 0
+_case "${DIRWRITE}" "the key file beside checks/ stays writable" \
+  "$(_b64 "chmod 600 ${HOME}/.config/personify/pangram-key")" 0
 _case "${DIRWRITE}" "a path merely mentioning the name" \
   "$(_b64 'echo gate-review > /tmp/notes.txt')" 0
 
@@ -202,6 +216,46 @@ _case "${DIRWRITE}" "prose containing 'vuln' near the dir" \
 # The anchor must not weaken a real write that follows a separator.
 _case "${DIRWRITE}" "a real rm after && is still blocked" \
   "$(_b64 "echo done \&\& rm ${HOME}/.claude/gate-review/approved/commit-1")" 2
+
+echo "=== merge-locks-write (Write/Edit hook): file_path cases ==="
+# This hook reads tool_input.file_path, not a command string, so it gets its
+# own payload builder. A temp HOME with no .claude/ stands in for a fresh
+# machine, the same fixture test-hooks-unwritable-log.sh uses, so a blocked
+# case's log append lands nowhere near the real ~/.claude/blocked-commands.log.
+MLWRITE="${SCRIPTS}/hook-block-merge-locks-write.sh"
+[[ -x "${MLWRITE}" ]] || {
+  echo "missing or not executable: ${MLWRITE}" >&2
+  exit 1
+}
+
+_wcase() {
+  local desc="$1" path="$2" want="$3" tmphome got
+  tmphome="$(mktemp -d)"
+  printf '{"tool_input":{"file_path":%s}}' "$(printf '%s' "${path}" | jq -Rs .)" |
+    HOME="${tmphome}" "${MLWRITE}" >/dev/null 2>&1
+  got=$?
+  rm -rf "${tmphome}"
+  if [[ "${got}" == "${want}" ]]; then
+    echo "  PASS (${got}) ${desc}"
+    pass=$((pass + 1))
+  else
+    echo "  FAIL (got ${got} want ${want}) ${desc}"
+    fail=$((fail + 1))
+  fi
+}
+
+_wcase "Write into personify checks" \
+  "${HOME}/.config/personify/checks/x.json" 2
+_wcase "Write into personify stamps" \
+  "${HOME}/.config/personify/stamps/x.json" 2
+_wcase "Write into merge-locks" \
+  "${HOME}/.claude/merge-locks/x" 2
+_wcase "the key file beside checks/ stays writable" \
+  "${HOME}/.config/personify/pangram-key" 0
+_wcase "the voice guide beside checks/ stays writable" \
+  "${HOME}/.config/personify/VOICE.md" 0
+_wcase "a file merely named after the dir" \
+  "/tmp/gate-review.log" 0
 
 echo "--- ${pass} passed, ${fail} failed"
 [[ "${fail}" == "0" ]]
