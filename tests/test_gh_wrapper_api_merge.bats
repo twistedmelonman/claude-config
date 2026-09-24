@@ -12,7 +12,10 @@
 #
 # Run: bats ~/.claude/tests/test_gh_wrapper_api_merge.bats
 
-FUNCTIONS_SH="${HOME}/.config/bash/functions.sh"
+# gh() lives in gh-wrapper.sh; functions.sh only sources it (and keeps a
+# fail-closed stub for when it is missing). Resolved here, at file load, from
+# the real HOME -- the tests swap HOME for a sandbox before loading.
+GH_WRAPPER_SH="${HOME}/.config/bash/gh-wrapper.sh"
 
 setup() {
   # GH_TOKEN must be unset for the whole test file. The wrapper refuses to run
@@ -64,24 +67,38 @@ teardown() {
   rm -rf "${MOCK_DIR}"
 }
 
-# Load gh() from functions.sh into the current shell with MOCK_HOME active.
+# Load gh() from gh-wrapper.sh into the current shell with MOCK_HOME active,
+# the same way functions.sh does in a real shell (it sources this file). See
+# the fuller note on the guards in test_gh_wrapper.bats: a load that silently
+# leaves the inherited real wrapper in scope makes these tests assert against
+# the ambient environment instead of the function they name. A false PASS is
+# worse than a failure, so every way the load can go wrong fails loudly.
 _load_gh_fn() {
   export HOME="${MOCK_HOME}"
-  local func_def
-  func_def=$(sed -n '/^gh()/,/^export -f gh$/p' "${FUNCTIONS_SH}")
 
-  # Fail loudly on a zero-line extraction (#477, suggested fix 3). See the
-  # fuller note in test_gh_wrapper.bats: `eval ""` is a no-op, so a range that
-  # matches nothing leaves the inherited real wrapper in scope and these tests
-  # silently assert against the ambient environment instead of the function
-  # they name. A false PASS is worse than a failure.
-  if [[ -z "${func_def//[[:space:]]/}" ]]; then
-    echo "FATAL: extracted no gh() definition from ${FUNCTIONS_SH}" >&2
-    echo "       The sed range no longer matches; see #477 fix 2." >&2
+  # Drop any gh() inherited from the caller's shell, so the checks below can
+  # only succeed if the definition came from GH_WRAPPER_SH.
+  unset -f gh
+
+  if [[ ! -f "${GH_WRAPPER_SH}" ]]; then
+    echo "FATAL: gh wrapper not found: ${GH_WRAPPER_SH}" >&2
     return 1
   fi
 
-  eval "${func_def}"
+  # shellcheck source=/dev/null
+  if ! source "${GH_WRAPPER_SH}"; then
+    echo "FATAL: sourcing ${GH_WRAPPER_SH} failed" >&2
+    return 1
+  fi
+
+  # extdebug makes `declare -F` report the file a function was defined in.
+  local def_src
+  def_src="$(shopt -s extdebug && declare -F gh)" || def_src=""
+  if [[ "${def_src}" != *" ${GH_WRAPPER_SH}" ]]; then
+    echo "FATAL: gh() is not defined by ${GH_WRAPPER_SH} after sourcing it" >&2
+    echo "       declare -F gh reported: '${def_src}'" >&2
+    return 1
+  fi
 }
 
 @test "gh api .../pulls/NNN/merge is blocked by wrapper" {
