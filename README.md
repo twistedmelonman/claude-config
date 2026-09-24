@@ -162,7 +162,7 @@ See `CLAUDE.md` for protocol documentation.
 
 `install.sh` links these into `~/.local/bin`, pointing at the deployed copy in `~/.claude`:
 
-- **claude-incognito** (`scripts/claude-incognito.sh`) — one-shot `claude -p` run that leaves no transcript, `/resume` entry, or `history.jsonl` line (print mode only)
+- **claude-incognito** (`scripts/claude-incognito.sh`) — one-shot `claude -p` run that leaves no transcript, `/resume` entry, or `history.jsonl` line (print mode only). Defaults to `--permission-mode bypassPermissions` and turns claude.ai connectors off so the Slack plugin loads; see the script header
 
 ## Reference
 
