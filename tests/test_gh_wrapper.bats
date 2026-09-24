@@ -1,5 +1,6 @@
 #!/usr/bin/env bats
-# Tests for gh() wrapper function in ~/.config/bash/functions.sh
+# Tests for gh() wrapper function in ~/.config/bash/gh-wrapper.sh
+# (sourced by ~/.config/bash/functions.sh)
 #
 # Verifies that help flags bypass the pre-merge review script entirely,
 # so `gh pr merge --help` just shows help instead of triggering a 120s
@@ -11,7 +12,10 @@
 #
 # Run: bats ~/.claude/tests/test_gh_wrapper.bats
 
-FUNCTIONS_SH="${HOME}/.config/bash/functions.sh"
+# gh() lives in gh-wrapper.sh; functions.sh only sources it (and keeps a
+# fail-closed stub for when it is missing). Resolved here, at file load, from
+# the real HOME -- the tests swap HOME for a sandbox before loading.
+GH_WRAPPER_SH="${HOME}/.config/bash/gh-wrapper.sh"
 
 setup() {
   # GH_TOKEN must be unset for the whole test file, not just clipped from one
@@ -30,9 +34,6 @@ setup() {
   # it lets each test actually reach and assert its behaviour. Verified
   # 2026-09-14 with a healthy, non-expired token.
   #
-  # This alone does NOT make this file green: the _load_gh_fn guard below now
-  # fails these tests loudly, because the sed extraction they depend on matches
-  # nothing. That is #477 Cause 2, tracked separately.
   unset GH_TOKEN
 
   # The wrapper's review-script location is an exported override
@@ -74,32 +75,43 @@ teardown() {
   rm -rf "${MOCK_DIR}"
 }
 
-# Load gh() from functions.sh into the current shell with MOCK_HOME active.
-# Uses eval so the function's ${HOME} references resolve to MOCK_HOME at
-# call time (HOME is set before each direct gh invocation in tests below).
+# Load gh() from gh-wrapper.sh into the current shell with MOCK_HOME active,
+# the same way functions.sh does in a real shell (it sources this file). The
+# wrapper resolves ${HOME} at call time, not source time, so the sandboxed
+# HOME set here is what each gh invocation below sees.
+#
+# Every way the load can go wrong fails loudly (#477). The earlier loader
+# sed-extracted gh() from functions.sh; once gh() moved to gh-wrapper.sh that
+# extraction matched nothing, and `eval ""` is a no-op -- so whatever `gh` was
+# already in scope (the inherited real wrapper) stayed, and the tests silently
+# exercised the ambient environment instead of the function they name. That is
+# a false PASS, which is worse than a failure. Hence: clear any inherited gh()
+# first, then require that gh() exists afterwards AND was defined by
+# GH_WRAPPER_SH.
 _load_gh_fn() {
   export HOME="${MOCK_HOME}"
-  local func_def
-  func_def=$(sed -n '/^gh()/,/^export -f gh$/p' "${FUNCTIONS_SH}")
 
-  # Fail loudly on a zero-line extraction (#477, suggested fix 3). `eval ""`
-  # is a no-op, so an extraction that matches nothing leaves whatever `gh` is
-  # already in scope -- the inherited real wrapper -- and the tests below then
-  # silently exercise the ambient environment instead of the function they
-  # name. That is a false PASS, which is worse than a failure.
-  #
-  # This range does NOT match today: `gh()` moved to gh-wrapper.sh and is
-  # indented there, and functions.sh keeps only an indented fallback stub with
-  # no `export -f gh` line. Repointing the extraction is #477's separate fix 2
-  # and is deliberately not attempted here; this guard only makes the breakage
-  # visible instead of silent.
-  if [[ -z "${func_def//[[:space:]]/}" ]]; then
-    echo "FATAL: extracted no gh() definition from ${FUNCTIONS_SH}" >&2
-    echo "       The sed range no longer matches; see #477 fix 2." >&2
+  unset -f gh
+
+  if [[ ! -f "${GH_WRAPPER_SH}" ]]; then
+    echo "FATAL: gh wrapper not found: ${GH_WRAPPER_SH}" >&2
     return 1
   fi
 
-  eval "${func_def}"
+  # shellcheck source=/dev/null
+  if ! source "${GH_WRAPPER_SH}"; then
+    echo "FATAL: sourcing ${GH_WRAPPER_SH} failed" >&2
+    return 1
+  fi
+
+  # extdebug makes `declare -F` report the file a function was defined in.
+  local def_src
+  def_src="$(shopt -s extdebug && declare -F gh)" || def_src=""
+  if [[ "${def_src}" != *" ${GH_WRAPPER_SH}" ]]; then
+    echo "FATAL: gh() is not defined by ${GH_WRAPPER_SH} after sourcing it" >&2
+    echo "       declare -F gh reported: '${def_src}'" >&2
+    return 1
+  fi
 }
 
 @test "gh pr merge --help bypasses review script" {
