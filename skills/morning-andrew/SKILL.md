@@ -5,7 +5,7 @@ description: >
   Andrew explicitly invokes /morning-andrew or asks to run the morning brief. A question about
   schedule or calendar is not a request for the brief — answer it directly instead.
   Always gathers: Google Calendar, Asana tasks, GitHub PRs (beacon-biosignals org,
-  andrewmrich account), Slack mentions/DMs, Gmail. Daily Slack huddle is at 8am PT —
+  andrewmrich account), Slack mentions/DMs, Gmail, and the last /evening-andrew KB note. Daily Slack huddle is at 8am PT —
   brief may run before or after it; surface everything relevant regardless.
 ---
 
@@ -25,7 +25,7 @@ sections, bold for item titles, bullets for lists).
 
 Runs take a few minutes. Let Andrew know upfront.
 
-Pull from all five sources in parallel. A missing connection is skipped silently; the
+Pull from all six sources in parallel. A missing connection is skipped silently; the
 brief adapts. Do not suggest connector cards — just note any gap in one line if material.
 
 GitHub: authenticate as `andrewmrich` (work account). Query beacon-biosignals org.
@@ -46,11 +46,16 @@ Andrew hasn't replied to or reacted to. Skip anything that was the huddle standu
 **5. Gmail** — threads where Andrew was directly asked something and hasn't replied.
 Fallback: unread in last 48h.
 
+**6. Yesterday's eod note** — the newest `~/kb/topics/meetings/eod/YYYY-MM-DD.md` dated
+on the last workday (on a Monday, Friday's note). Written by `/evening-andrew`. Read its
+`## Done` and `## Blocked` sections. No note for that day → skip.
+
 Pull ~8 candidates per source. Verify open/unanswered status before including.
 
 ## Sort
 
-Three sections: **Needs attention**, **Waiting on others**, then **Resolved**. Below those,
+First, **Yesterday (for huddle)** when an eod note exists. Then three sections:
+**Needs attention**, **Waiting on others**, then **Resolved**. Below those,
 fixed sections in order: Calendar · Asana · GitHub · Slack wrap-up · Gmail wrap-up.
 
 **Needs attention** — only items Andrew himself can advance right now, and that cost
@@ -81,6 +86,12 @@ No padding, no commands, no apology, no narration of process.
 ```
 
 One line. Names the actual shape. Not templated.
+
+### Yesterday (for huddle)
+
+Placed first, right after the header. Copy the eod note's Done and Blocked bullets
+verbatim, links included, under those two labels. Do not re-verify or rewrite them. No
+note → omit the section.
 
 ### Needs attention
 
