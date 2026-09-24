@@ -5,7 +5,7 @@ description: >
   Andrew explicitly invokes /morning-andrew or asks to run the morning brief. A question about
   schedule or calendar is not a request for the brief — answer it directly instead.
   Always gathers: Google Calendar, Asana tasks, GitHub PRs (beacon-biosignals org,
-  andrewmrich account), Slack mentions/DMs, Gmail, and the last /evening-andrew KB note. Daily Slack huddle is at 8am PT —
+  andrewmrich account), Slack mentions/DMs, Gmail, new-version notices for documents a skill depends on, and the last /evening-andrew KB note. Daily Slack huddle is at 8am PT —
   brief may run before or after it; surface everything relevant regardless.
 ---
 
@@ -25,7 +25,7 @@ sections, bold for item titles, bullets for lists).
 
 Runs take a few minutes. Let Andrew know upfront.
 
-Pull from all six sources in parallel. A missing connection is skipped silently; the
+Pull from all seven sources in parallel. A missing connection is skipped silently; the
 brief adapts. Do not suggest connector cards — just note any gap in one line if material.
 
 GitHub: authenticate as `andrewmrich` (work account). Query beacon-biosignals org.
@@ -49,6 +49,17 @@ Fallback: unread in last 48h.
 **6. Yesterday's eod note** — the newest `~/kb/topics/meetings/eod/YYYY-MM-DD.md` dated
 on the last workday (on a Monday, Friday's note). Written by `/evening-andrew`. Read its
 `## Done` and `## Blocked` sections. No note for that day → skip.
+
+**7. Skill document dependencies** — read `~/Developer/beacon-biosignals/skills/doc-deps.txt`.
+Its `# sender:` and `# pattern:` header lines name the notice sender and the body line that
+carries a document's version. Each non-comment line is `<skill> <document code> <version>`.
+For each code, find the newest Gmail message `from:<sender> "<code>"`:
+
+- No message → nothing to report.
+- Its version differs from the file's → **Needs attention**: `<code> <new version>: update <skill>`.
+- Message found, version not parseable → same item, "version unreadable".
+
+File missing → skip. No time window: the item clears only when the file's version is bumped.
 
 Pull ~8 candidates per source. Verify open/unanswered status before including.
 
