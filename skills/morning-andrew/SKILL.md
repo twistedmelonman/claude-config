@@ -50,12 +50,19 @@ Pull ~8 candidates per source. Verify open/unanswered status before including.
 
 ## Sort
 
-Two sections: **Needs attention** then **Resolved**. Below those, fixed sections in order:
-Calendar · Asana · GitHub · Slack wrap-up · Gmail wrap-up.
+Three sections: **Needs attention**, **Waiting on others**, then **Resolved**. Below those,
+fixed sections in order: Calendar · Asana · GitHub · Slack wrap-up · Gmail wrap-up.
 
-**Needs attention** — costs something to ignore until tomorrow: someone's blocked,
-window closes today, harder to undo. Anchor to a real result. Verify it's still open.
-Prep items count: tomorrow event that goes better with action today.
+**Needs attention** — only items Andrew himself can advance right now, and that cost
+something to ignore until tomorrow: someone's blocked on him, window closes today, harder
+to undo. Anchor to a real result. Verify it's still open. Prep items count: tomorrow event
+that goes better with action today.
+
+Test: before listing an item under Needs attention, name the concrete action Andrew can
+take. If the action is "wait" or "nudge someone", it belongs in Waiting on others.
+
+**Waiting on others** — next move belongs to someone else: awaiting review, awaiting
+another person's action, blocked on another team.
 
 **Resolved** — closed recently, worth a glance: thread someone else answered, reply
 landed, meeting cancelled, PR merged.
@@ -80,6 +87,14 @@ One line. Names the actual shape. Not templated.
 Bold linked title ≤8 words (Andrew's words, not subject lines or display names).
 One sentence: source in prose + substance + why today.
 
+### Waiting on others
+
+One line per item: what it waits on and who.
+
+```
+- **[title](url)** — awaiting review; no reviewer assigned
+```
+
 ### Resolved
 
 One sentence per item: what closed, who closed it, outcome.
@@ -103,7 +118,9 @@ Open tasks assigned to Andrew. Format:
 - **Task title** — status note, due date if relevant
 ```
 
-Flag overdue with `[overdue]`. Flag stale (no activity, due within 3d) with `[stale]`.
+Flag overdue with `[overdue]`. Next step belongs to someone else → `[waiting]` plus who it
+waits on, not `[stale]`. Flag `[stale]` (no activity, due within 3d) only on tasks Andrew
+can advance.
 
 ### GitHub PRs
 
@@ -157,7 +174,8 @@ semantic payload only, zero ceremony.
 - **Hours**: 8am–5pm PT, M–F
 - **Org**: Beacon Biosignals — GitHub org `beacon-biosignals`, work account `andrewmrich`
 - **Role**: Platform SRE, Software Engineer IV
-- **Manager**: Andrew Voss
+- **Manager**: uncertain as of 2026-09-23. Jessica is the new Head of Reliability and
+  Security Engineering; unconfirmed whether Andrew reports to her or to Andrew Voss.
 - **Active workstream**: git-pkgs-proxy package proxy; Asana tasks in scope
 - **Huddle**: daily Slack huddle at 8am PT, unrecorded. Brief may run before or after it.
 
