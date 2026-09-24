@@ -81,9 +81,13 @@ Commit messages and PR/issue bodies need Andrew's visual approval.
 - Enforced by `hook-block-personify.sh` for the Bash tool, and by
   `gh-wrapper.sh` (`_gh_wrapper_approval_gate`) for manual `gh` calls.
 - `stage` also refuses a file with no `~/.config/personify/checks/<sha256 of
-  raw bytes>.json` check record. Run `python3 <personify skill
-  dir>/scripts/pangram_check.py < <file>` on that exact file first; PASS,
-  FAIL, and SKIPPED records are all accepted.
+  raw bytes>.json` check record. Run `pangram_check.py < <file>` on that
+  exact file first; PASS, FAIL, and SKIPPED records are all accepted. The
+  refusal prints the full command, with the `installPath` of
+  `personify@personify` from `~/.claude/plugins/installed_plugins.json`. Use
+  that path, not a directory picked from the plugin cache: the cache keeps
+  every past version, and an old one can lack features (2.0.1 has no
+  Keychain key lookup).
 - `open` shows one Pangram line per item in the header, read from that
   item's check record.
 

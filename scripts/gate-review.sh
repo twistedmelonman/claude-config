@@ -92,6 +92,25 @@ _raw_sha() {
   sha256sum "$1" | cut -d' ' -f1
 }
 
+# The command that writes a check record, with the path of the personify
+# version Claude Code has installed. The plugin cache keeps every past version
+# side by side, and a guessed one can predate a feature the check now needs:
+# 2.0.1 has no Keychain lookup, so on 2026-09-24 it reported "no Pangram API
+# key found" on a machine whose key was in the Keychain. Computed per call so a
+# test can point CLAUDE_CONFIG_DIR at a fixture.
+_check_hint() {
+  local file="$1" plugins install_path
+  plugins="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}/plugins/installed_plugins.json"
+  install_path="$(jq -er '.plugins["personify@personify"][0].installPath // empty' \
+    "${plugins}" 2>/dev/null)" || install_path=""
+  if [[ -n "${install_path}" && -f "${install_path}/scripts/pangram_check.py" ]]; then
+    printf 'python3 %s/scripts/pangram_check.py < %s\n' "${install_path}" "${file}"
+  else
+    printf 'personify is not installed (no personify@personify with scripts/pangram_check.py in %s); install it with: claude plugin install personify@personify\n' \
+      "${plugins}"
+  fi
+}
+
 _record_path() {
   local dir sha
   dir="$(_checks_dir)"
@@ -129,10 +148,12 @@ _cmd_stage() {
   _prune_expired
   record="$(_record_path "${file}")"
   if [[ ! -f "${record}" ]]; then
+    local hint
+    hint="$(_check_hint "${file}")"
     {
       echo "gate-review: no Pangram check record for ${file}."
       echo "gate-review: run the personify check on this exact file, then stage again:"
-      echo "gate-review:   python3 <personify skill dir>/scripts/pangram_check.py < ${file}"
+      echo "gate-review:   ${hint}"
       echo "gate-review: PASS, FAIL, and SKIPPED all leave a record; an error does not."
     } >&2
     exit 1
