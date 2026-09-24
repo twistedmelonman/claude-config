@@ -88,6 +88,12 @@
         "source": "git",
         "url": "https://github.com/smartwatermelon/smartwatermelon-marketplace.git"
       }
+    },
+    "superpowers-marketplace": {
+      "source": {
+        "repo": "obra/superpowers-marketplace",
+        "source": "github"
+      }
     }
   },
   "feedbackDrafts": "off",
