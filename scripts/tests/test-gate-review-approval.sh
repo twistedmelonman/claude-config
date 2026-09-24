@@ -243,5 +243,102 @@ else
   _ok "emptying an item revokes its earlier approval"
 fi
 
+# --- check records: stage requires one, open shows it -----------------------
+
+export XDG_CONFIG_HOME="${TMP}/xdg"
+CHECKS="${XDG_CONFIG_HOME}/personify/checks"
+mkdir -p "${CHECKS}"
+
+_seed_record() {
+  local file="$1" json="$2" sha
+  sha="$(sha256sum "${file}" | cut -d' ' -f1)"
+  printf '%s\n' "${json}" >"${CHECKS}/${sha}.json"
+}
+
+UNCHECKED="${TMP}/unchecked.txt"
+printf 'fix(x): nobody ran the check on this\n' >"${UNCHECKED}"
+rm -f "${PENDING:?}"/*
+if (_cmd_stage unchecked "${UNCHECKED}") >/dev/null 2>&1; then
+  _no "stage refuses a file with no check record"
+else
+  _ok "stage refuses a file with no check record"
+fi
+if [[ ! -e "${PENDING}/unchecked" ]]; then
+  _ok "a refused stage leaves nothing pending"
+else
+  _no "a refused stage leaves nothing pending"
+fi
+
+CHECKED="${TMP}/checked.txt"
+printf 'fix(x): trailing whitespace is part of the key   \n\n' >"${CHECKED}"
+_seed_record "${CHECKED}" '{"status":"FAIL","verdict":"AI","fraction_ai":0.97,"word_count":212}'
+if (_cmd_stage checked "${CHECKED}") >/dev/null 2>&1 && cmp -s "${CHECKED}" "${PENDING}/checked"; then
+  _ok "stage accepts a FAIL record keyed by the raw bytes"
+else
+  _no "stage accepts a FAIL record keyed by the raw bytes"
+fi
+
+got="$(_verdict_line checked "${CHECKED}")"
+if [[ "${got}" == "# checked: FAIL (AI, fraction_ai 0.97, 212 words)" ]]; then
+  _ok "verdict line for a classified record"
+else
+  _no "verdict line for a classified record: ${got}"
+fi
+
+SHORT="${TMP}/short.txt"
+printf 'fix(x): short\n' >"${SHORT}"
+_seed_record "${SHORT}" '{"status":"SKIPPED","verdict":null,"fraction_ai":null,"word_count":2}'
+got="$(_verdict_line short "${SHORT}")"
+if [[ "${got}" == "# short: SKIPPED (2 words, under the floor)" ]]; then
+  _ok "verdict line for a skipped record"
+else
+  _no "verdict line for a skipped record: ${got}"
+fi
+
+got="$(_verdict_line unchecked "${UNCHECKED}")"
+if [[ "${got}" == "# unchecked: NO RECORD" ]]; then
+  _ok "verdict line when the record is gone"
+else
+  _no "verdict line when the record is gone"
+fi
+
+BROKEN="${TMP}/broken.txt"
+printf 'fix(x): record is not json\n' >"${BROKEN}"
+_seed_record "${BROKEN}" 'not json {'
+got="$(_verdict_line broken "${BROKEN}")"
+if [[ "${got}" == "# broken: UNREADABLE RECORD" ]]; then
+  _ok "verdict line for a malformed record"
+else
+  _no "verdict line for a malformed record"
+fi
+
+# An empty XDG_CONFIG_HOME falls back to ~/.config, as pangram_check.py does.
+got="$(XDG_CONFIG_HOME='' _checks_dir)"
+if [[ "${got}" == "${HOME}/.config/personify/checks" ]]; then
+  _ok "empty XDG_CONFIG_HOME falls back to ~/.config"
+else
+  _no "empty XDG_CONFIG_HOME falls back to ~/.config"
+fi
+
+# Verdict lines sit in the framing header and must not reach approved bytes.
+V="${TMP}/v.txt"
+printf 'fix(v): body under a verdict header\n' >"${V}"
+rm -f "${APPROVED:?}"/*
+{
+  echo "# STATUS: APPROVED"
+  echo "# PANGRAM (proof the check ran; the verdict is information):"
+  echo "# item-v: FAIL (AI, fraction_ai 1.0, 212 words)"
+  echo "# BATCH: vh"
+  echo ""
+  echo "=== item-v ==="
+  cat "${V}"
+} >"${GATE_REVIEW_DIR}/batch.txt"
+_split_batch "${GATE_REVIEW_DIR}/batch.txt" vh >/dev/null 2>&1
+if _cmd_check "${V}"; then
+  _ok "verdict header lines leave approved bytes unchanged"
+else
+  _no "verdict header lines leave approved bytes unchanged"
+fi
+
 echo "--- ${pass} passed, ${fail} failed"
 [[ "${fail}" == "0" ]]

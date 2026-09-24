@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Keep the two approval directories agent-unwritable from the Bash tool.
+# Keep the four approval directories agent-unwritable from the Bash tool.
 #
-#   ~/.claude/merge-locks/   merge authorization
-#   ~/.claude/gate-review/   commit/PR text approval
+#   ~/.claude/merge-locks/       merge authorization
+#   ~/.claude/gate-review/       commit/PR text approval
+#   ~/.config/personify/checks/  Pangram check records
+#   ~/.config/personify/stamps/  Human approval stamps
 #
 # THE HOLE THIS CLOSES. hook-block-merge-locks-write.sh is registered for the
 # Write and Edit matchers only, and reads tool_input.file_path. A Bash `cp`
@@ -25,6 +27,10 @@
 # any writer not named below. Both locks are forcing functions, not
 # cryptographic locks -- a point accepted when this design was chosen. The
 # value is that the obvious path is closed and the log records attempts.
+# gate-review.sh's check-record lookup honors XDG_CONFIG_HOME, so an agent
+# that sets that variable to a directory it controls can write a check record
+# this hook never sees and bypass it that way. This is the same class as the
+# existing GATE_REVIEW_DIR override, and it is accepted for the same reason.
 #
 # Called by: hook-block-all.sh (PreToolUse Bash hook chain)
 
@@ -40,7 +46,7 @@ cmd=$(printf '%s\n' "${input}" | jq -r '.tool_input.command // empty')
 # trailing `/` is required: without it the pattern also matches
 # `scripts/gate-review.sh`, the tool itself, and editing the gate became
 # impossible. Only paths INSIDE the directories are approval state.
-_dirs='(\.claude/(merge-locks|gate-review)/)'
+_dirs='(\.claude/(merge-locks|gate-review)/|\.config/personify/(checks|stamps)/)'
 
 # A verb counts only in COMMAND POSITION -- at the start of the line or just
 # after a separator. Without this anchor the alternation matched the letters
@@ -96,9 +102,10 @@ printf '%s BLOCKED GATE-DIR WRITE (%s)\n' \
   echo ''
   echo "  kind: ${blocked}"
   echo ''
-  echo 'merge-locks/ and gate-review/ hold decisions only Andrew makes. An'
-  echo 'agent that can write them can approve its own text or its own merge,'
-  echo 'which is the single thing both locks exist to prevent.'
+  echo 'merge-locks/ and gate-review/ hold decisions only Andrew makes, and'
+  echo 'personify checks/ and stamps/ hold what Pangram said. An agent that'
+  echo 'can write them can approve its own text or forge a check, which is'
+  echo 'what these directories exist to prevent.'
   echo ''
   echo 'Reading from these directories is allowed and is the normal path:'
   echo '  git commit -F ~/.claude/gate-review/approved/<name>'

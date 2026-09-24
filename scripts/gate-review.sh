@@ -20,7 +20,7 @@
 # through ungated. See claude-config#509 for the same unsolved remote case.
 #
 # Usage:
-#   gate-review.sh stage <name> <file>   queue one artifact for review
+#   gate-review.sh stage <name> <file>   queue one artifact for review (needs a Pangram check record)
 #   gate-review.sh open                  open the batch, wait for save
 #   gate-review.sh hash <file>           print the approved-bytes hash
 #   gate-review.sh check <file>          exit 0 if file matches ANY approval
@@ -77,10 +77,64 @@ _hash() {
   printf '%s' "$(sed -e 's/[[:space:]]*$//' "$1")" | sha256sum | cut -d' ' -f1
 }
 
+# Where personify's pangram_check.py records every result. Mirrors its
+# config_root: an empty XDG_CONFIG_HOME falls through to ~/.config. Computed
+# per call, not at load, so a test can point it at a fixture dir.
+_checks_dir() {
+  printf '%s/personify/checks' "${XDG_CONFIG_HOME:-${HOME}/.config}"
+}
+
+# The record key is the sha256 of the RAW bytes, which is what the check hashed
+# from stdin. Not _hash: stripping trailing whitespace here would miss every
+# record for a file that ends in a blank line.
+_raw_sha() {
+  sha256sum "$1" | cut -d' ' -f1
+}
+
+_record_path() {
+  local dir sha
+  dir="$(_checks_dir)"
+  sha="$(_raw_sha "$1")"
+  printf '%s/%s.json' "${dir}" "${sha}"
+}
+
+# One header line per item. Never fails: a missing or unreadable record is
+# shown, not fatal, because stage already enforced that the check ran.
+_verdict_line() {
+  local name="$1" file="$2" record line
+  record="$(_record_path "${file}")"
+  if [[ ! -f "${record}" ]]; then
+    printf '# %s: NO RECORD\n' "${name}"
+    return 0
+  fi
+  if line="$(jq -er --arg n "${name}" '
+      if .status == "SKIPPED"
+      then "# \($n): SKIPPED (\(.word_count) words, under the floor)"
+      else "# \($n): \(.status) (\(.verdict), fraction_ai \(.fraction_ai), \(.word_count) words)"
+      end' "${record}" 2>/dev/null)"; then
+    printf '%s\n' "${line}"
+  else
+    printf '# %s: UNREADABLE RECORD\n' "${name}"
+  fi
+}
+
 _cmd_stage() {
-  local name="$1" file="$2"
+  local name="$1" file="$2" record
   [[ -f "${file}" ]] || _die "no such file: ${file}"
   [[ "${name}" =~ ^[A-Za-z0-9._-]+$ ]] || _die "bad artifact name: ${name}"
+  # The reviewer should see what Pangram said before approving, so a text the
+  # check never saw is not staged. Any result counts, FAIL and SKIPPED
+  # included: this proves the check ran, it does not require a pass.
+  record="$(_record_path "${file}")"
+  if [[ ! -f "${record}" ]]; then
+    {
+      echo "gate-review: no Pangram check record for ${file}."
+      echo "gate-review: run the personify check on this exact file, then stage again:"
+      echo "gate-review:   python3 <personify skill dir>/scripts/pangram_check.py < ${file}"
+      echo "gate-review: PASS, FAIL, and SKIPPED all leave a record; an error does not."
+    } >&2
+    exit 1
+  fi
   cp "${file}" "${PENDING}/${name}"
   printf 'staged: %s\n' "${name}"
 }
@@ -110,6 +164,11 @@ _cmd_open() {
     echo "# STATUS: PENDING"
     echo "#"
     echo "# REVIEW THESE ${count} ITEM(S), EDIT FREELY."
+    echo "#"
+    echo "# PANGRAM (proof the check ran; the verdict is information):"
+    for f in "${PENDING}"/*; do
+      _verdict_line "${f##*/}" "${f}"
+    done
     echo "#"
     echo "# TO APPROVE: change PENDING above to APPROVED, then save."
     echo "# TO ABORT:   change PENDING above to ABORT, then save."
