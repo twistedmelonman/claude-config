@@ -60,3 +60,4 @@ image-cache
 remote-settings.json
 .claude.json.backup
 gh-pr-status-cache.json
+policy-limits.json.stamp.json
