@@ -158,6 +158,12 @@ Automated code review and safety hooks are configured in `hooks/` and `scripts/`
 
 See `CLAUDE.md` for protocol documentation.
 
+## Commands
+
+`install.sh` links these into `~/.local/bin`, pointing at the deployed copy in `~/.claude`:
+
+- **claude-incognito** (`scripts/claude-incognito.sh`) — one-shot `claude -p` run that leaves no transcript, `/resume` entry, or `history.jsonl` line (print mode only)
+
 ## Reference
 
 - Main config: [CLAUDE.md](./CLAUDE.md)
