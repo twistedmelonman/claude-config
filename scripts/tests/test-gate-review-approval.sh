@@ -277,6 +277,46 @@ else
   _no "a refused stage leaves nothing pending"
 fi
 
+# The refusal names the INSTALLED personify, not a placeholder. The cache keeps
+# old versions beside it, and on 2026-09-24 a guessed 2.0.1 (no Keychain
+# lookup) reported a missing key that the installed 2.0.3 found.
+PLUGINS="${TMP}/claude/plugins"
+mkdir -p "${PLUGINS}/cache/personify/2.0.1/scripts" "${PLUGINS}/cache/personify/2.0.3/scripts"
+touch "${PLUGINS}/cache/personify/2.0.1/scripts/pangram_check.py" \
+  "${PLUGINS}/cache/personify/2.0.3/scripts/pangram_check.py"
+printf '{"plugins":{"personify@personify":[{"installPath":"%s"}]}}\n' \
+  "${PLUGINS}/cache/personify/2.0.3" >"${PLUGINS}/installed_plugins.json"
+got="$( (CLAUDE_CONFIG_DIR="${TMP}/claude" _cmd_stage unchecked "${UNCHECKED}") 2>&1 >/dev/null || true)"
+if [[ "${got}" == *"python3 ${PLUGINS}/cache/personify/2.0.3/scripts/pangram_check.py < ${UNCHECKED}"* ]]; then
+  _ok "refusal names the installed pangram_check.py"
+else
+  _no "refusal names the installed pangram_check.py: ${got}"
+fi
+if [[ "${got}" != *"2.0.1"* && "${got}" != *"<personify skill dir>"* ]]; then
+  _ok "refusal names no other version and no placeholder"
+else
+  _no "refusal names no other version and no placeholder: ${got}"
+fi
+
+# No personify entry: say so, rather than print a command that cannot run.
+printf '{"plugins":{}}\n' >"${PLUGINS}/installed_plugins.json"
+got="$( (CLAUDE_CONFIG_DIR="${TMP}/claude" _cmd_stage unchecked "${UNCHECKED}") 2>&1 >/dev/null || true)"
+if [[ "${got}" == *"personify is not installed"* && "${got}" != *"python3 "* ]]; then
+  _ok "refusal says personify is not installed when it is not"
+else
+  _no "refusal says personify is not installed when it is not: ${got}"
+fi
+
+# An entry whose directory is gone counts as not installed too.
+printf '{"plugins":{"personify@personify":[{"installPath":"%s"}]}}\n' \
+  "${PLUGINS}/cache/personify/9.9.9" >"${PLUGINS}/installed_plugins.json"
+got="$( (CLAUDE_CONFIG_DIR="${TMP}/claude" _cmd_stage unchecked "${UNCHECKED}") 2>&1 >/dev/null || true)"
+if [[ "${got}" == *"personify is not installed"* ]]; then
+  _ok "refusal says not installed when installPath is missing"
+else
+  _no "refusal says not installed when installPath is missing: ${got}"
+fi
+
 CHECKED="${TMP}/checked.txt"
 printf 'fix(x): trailing whitespace is part of the key   \n\n' >"${CHECKED}"
 _seed_record "${CHECKED}" '{"status":"FAIL","verdict":"AI","fraction_ai":0.97,"word_count":212}'
