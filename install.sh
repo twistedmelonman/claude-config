@@ -310,7 +310,43 @@ if [[ ${#_SUBMODULE_ROOTS[@]} -gt 0 ]]; then
 fi
 
 # ============================================================================
-# 7. GIT CLEAN FILTER (iTerm2 cc-status home directory)
+# 7. PATH COMMANDS (~/.local/bin)
+# ============================================================================
+# Scripts meant to be run by hand get a ~/.local/bin link. The link targets the
+# DEPLOYED copy under ${DEPLOY_DIR}, not the repo, matching
+# ~/.local/bin/merge-lock -> ~/.claude/hooks/merge-lock.sh.
+#
+# _ensure_symlink handles dry-run, idempotency, and backup of a pre-existing
+# file. An already-correct link takes its _skip path, so it never counts as
+# pending work in `--sync --dry-run` (claude-config#344).
+#
+# The ~/.local/bin link is outside DEPLOY_DIR, so the symlink health check
+# below does not cover it.
+
+# Gate on TRACKED, not merely present: section 5 deploys tracked files only, so
+# an untracked script would leave this link dangling.
+_incognito_tracked=false
+for _tf in "${_TRACKED_FILES[@]}"; do
+  if [[ "${_tf}" == "scripts/claude-incognito.sh" ]]; then
+    _incognito_tracked=true
+    break
+  fi
+done
+
+if ! ${_incognito_tracked}; then
+  # Not an error: a checkout without the script (or the bats fixture, which
+  # copies only install.sh into a throwaway repo) simply has nothing to link.
+  _skip "No tracked claude-incognito script — skipping ~/.local/bin link"
+elif [[ ! -x "${REPO_DIR}/scripts/claude-incognito.sh" ]]; then
+  _warn "Not executable: ${REPO_DIR}/scripts/claude-incognito.sh"
+  failures+=("claude-incognito-not-executable")
+else
+  _ensure_symlink "${DEPLOY_DIR}/scripts/claude-incognito.sh" \
+    "${HOME}/.local/bin/claude-incognito"
+fi
+
+# ============================================================================
+# 8. GIT CLEAN FILTER (iTerm2 cc-status home directory)
 # ============================================================================
 # iTerm2 rewrites settings.json's cc-status hook paths to this machine's
 # absolute home directory on every launch, which dirties the tracked file
@@ -398,7 +434,7 @@ else
 fi
 
 # ============================================================================
-# 8. POST-INSTALL SMOKE TESTS
+# 9. POST-INSTALL SMOKE TESTS
 # ============================================================================
 
 _info "Running smoke tests..."
@@ -523,8 +559,8 @@ else
 fi
 
 # ── Sync-mode exit ───────────────────────────────────────
-# Sections 5-7 reconcile the deployed tree with the repo and verify it.
-# Everything below is bootstrap-only (and section 8 is destructive), so
+# Sections 5-9 reconcile the deployed tree with the repo and verify it.
+# Everything below is bootstrap-only (and section 10 is destructive), so
 # --sync stops here. Exits non-zero on failures so `allup`'s `|| return $?`
 # surfaces a broken deploy instead of silently continuing to `updates`.
 if ${SYNC_ONLY}; then
@@ -569,7 +605,7 @@ if ${SYNC_ONLY}; then
 fi
 
 # ============================================================================
-# 9. CLEAN UP DEPLOY-DIR GIT METADATA
+# 10. CLEAN UP DEPLOY-DIR GIT METADATA
 # ============================================================================
 # If ~/.claude was previously its own git clone, remove the repo metadata.
 # Tracked files are now symlinks — the git repo belongs in ~/Developer/claude-config.
@@ -609,7 +645,7 @@ else
 fi # end REPO_DIR != DEPLOY_DIR guard
 
 # ============================================================================
-# 9. SUMMARY
+# 11. SUMMARY
 # ============================================================================
 
 echo ""
