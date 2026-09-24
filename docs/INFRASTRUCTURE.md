@@ -72,7 +72,9 @@ Commit messages and PR/issue bodies need Andrew's visual approval.
   batch in BBEdit and waits. Approval is changing `# STATUS: PENDING` to
   `APPROVED` and saving. `check <file>` exits 0 if the file matches any approval.
 - `check` compares a content hash. A match is not consumed, so an identical
-  repeat (for example a retry after a failed push) passes.
+  repeat (for example a retry after a failed push) passes. Approvals expire
+  30 minutes after they are written (`GATE_REVIEW_APPROVAL_TTL`, seconds),
+  the same window as a merge-lock; `check` and `stage` delete expired ones.
 - Text must come from a file at an absolute path: `git commit -F` or
   `gh ... --body-file`. Inline `-m`/`--body`, relative paths, and `~`/`$VAR`
   paths are blocked. PR and issue titles are not gated.
