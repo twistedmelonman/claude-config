@@ -16,6 +16,7 @@ setup() {
   # one function under test is enough.
   log_warn() { :; }
   export -f log_warn
+  eval "$(sed -n '/^has_blocking_severity() {/,/^}/p' "${SCRIPT}")"
   eval "$(sed -n '/^downgrade_version_unfamiliarity_findings() {/,/^}/p' "${SCRIPT}")"
   eval "$(sed -n '/^parse_verdict() {/,/^}/p' "${SCRIPT}")"
 }
@@ -161,4 +162,32 @@ DETAILS: possible supply${sep}chain compromise")
     [[ "${out}" == *"SEVERITY: BLOCKING"* ]]
     [ "$(parse_verdict "${out}")" = "FAIL" ]
   done
+}
+
+@test "markdown severity: a bolded BLOCKING survivor keeps FAIL and the sentinel" {
+  local out
+  out=$(downgrade_version_unfamiliarity_findings "__REVIEW_BLOCKING__ true
+VERDICT: FAIL
+ISSUE: pin to actionlint 1.7.7 does not exist
+SEVERITY: BLOCKING
+DETAILS: no such version published
+
+ISSUE: user input passed to eval
+**SEVERITY:** BLOCKING
+DETAILS: eval of form data.")
+  [ "$(parse_verdict "${out}")" = "FAIL" ]
+  [[ "${out}" == *"__REVIEW_BLOCKING__ true"* ]]
+}
+
+@test "block split: a numbered ISSUE line starts a new finding" {
+  local out
+  out=$(downgrade_version_unfamiliarity_findings "VERDICT: FAIL
+1. ISSUE: pin to actionlint 1.7.7 does not exist
+SEVERITY: BLOCKING
+DETAILS: no such version published
+2. ISSUE: off-by-one in loop
+SEVERITY: BLOCKING
+DETAILS: The loop skips the last element.")
+  [ "$(parse_verdict "${out}")" = "FAIL" ]
+  grep -A1 'off-by-one' <<<"${out}" | grep -q 'SEVERITY: BLOCKING'
 }

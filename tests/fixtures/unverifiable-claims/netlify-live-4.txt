@@ -1,0 +1,6 @@
+VERDICT: FAIL
+
+ISSUE: Netlify form submission ID placeholder syntax is incorrect
+SEVERITY: BLOCKING
+LOCATION: contact.html:10
+DETAILS: The placeholder `%{submissionId}` does not match Netlify's documented syntax for dynamic form data. Netlify does not support arbitrary variable substitution in form field values via percent-brace notation. The `data-netlify="true"` form will submit the literal string `"T&amp;J Cleaning inquiry &mdash; %{submissionId}"` as the subject, not interpolate it.
