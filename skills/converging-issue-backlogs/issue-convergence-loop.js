@@ -165,8 +165,8 @@ RULES:
   `worktreePath` — the orchestrator needs all three to retrieve your work.
 - Do NOT run: git push, gh pr create, gh issue close, gh pr merge. Publishing and
   merging stay with the orchestrator and its human.
-- Apply Chesterton's Fence: before removing or weakening anything, articulate in
-  your summary why it exists.
+- Before removing or weakening anything, state in your summary the concrete
+  reason it exists (what it prevents) and why that no longer applies.
 - Several of these issues are documented-limitation notes rather than defects. If
   the correct resolution is "this is intended, make the intent explicit" or "this
   finding is stale/wrong", return outcome=no_change_needed with the evidence that
@@ -239,7 +239,7 @@ ${REPO_CONTEXT}
 
 Same rules as an issue fix: scope to THIS concern only; COMMIT in your worktree
 and report commit/branch/worktreePath; no push, no gh pr create, no gh issue
-close; Chesterton's Fence before removing anything;
+close; state why a thing exists before removing it;
 add test coverage for behavior changes; verify with real command output.
 A well-evidenced no_change_needed is a complete outcome. Report the issue field
 as ${item.parent ?? 0}.`

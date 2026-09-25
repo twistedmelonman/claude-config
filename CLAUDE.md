@@ -320,7 +320,11 @@ Banned until the PR is merged: "production ready", "ready for review", "all done
 - Test changes in `/tmp/` before applying to production code
 - Batch size ~3 changes, then verify against reality
 - More than 5 actions without verification = accumulating unjustified beliefs
-- **Chesterton's Fence**: Before removing anything, articulate why it exists
+- **Know why a thing exists before you remove or change it.** Find the
+  concrete reason: what it prevents, and whether that still applies. State
+  the reason itself, not the name of a principle. If you cannot find it, say
+  so and ask. When the reason was not written down, write it where the next
+  reader will look: a code comment or the commit message.
 - **Resolve the thing; don't match its label.** A name, tag, comment, or
   count is a claim about state, not state. Follow it to what it actually
   resolves to, and validate the check against a known-bad case first — a
