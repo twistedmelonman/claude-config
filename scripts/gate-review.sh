@@ -253,27 +253,40 @@ _cmd_open() {
   # `open` returns as soon as the request is dispatched, so wait on the file
   # rather than on the editor. Poll the status word: it is written only by a
   # human typing it, whereas mtime moves for reasons that are not approval.
+  #
+  # A word that is neither keyword nor a near-miss of one does not end the
+  # wait. It used to: a typo like APPORVED died as "unrecognized", and the
+  # whole batch had to be staged and opened again (claude-config#559). Now the
+  # word is reported once, and the reviewer fixes it and saves again.
   printf 'waiting for APPROVED or ABORT (timeout %ss)...\n' "${POLL_TIMEOUT}" >&2
+  local reported=""
+  CLASS=PENDING
+  CLASS_WHY=""
   while ((waited < POLL_TIMEOUT)); do
     sleep 2
     waited=$((waited + 2))
     status="$(_status "${batch}")"
-    [[ "${status}" != "PENDING" ]] && break
+    _classify "${status}"
+    [[ "${CLASS}" == "APPROVED" || "${CLASS}" == "ABORT" ]] && break
+    if [[ "${CLASS}" == "UNRECOGNIZED" && "${status}" != "${reported}" ]]; then
+      printf "gate-review: read STATUS '%s'; not understood (%s). Nothing approved. Still waiting: fix the word and save again.\n" \
+        "${status}" "${CLASS_WHY}" >&2
+      reported="${status}"
+    fi
   done
 
-  status="$(_status "${batch}")"
-  case "${status}" in
+  case "${CLASS}" in
     APPROVED) ;;
     ABORT)
       rm -f "${APPROVED:?}"/*
       rm -f "${batch}"
-      _die "ABORT; nothing approved"
+      _die "ABORT (STATUS read as '${status}'); nothing approved"
       ;;
     PENDING)
       _die "still PENDING after ${POLL_TIMEOUT}s; nothing approved"
       ;;
     *)
-      _die "unrecognized status '${status}'; nothing approved"
+      _die "unrecognized status '${status}' after ${POLL_TIMEOUT}s (${CLASS_WHY}); nothing approved"
       ;;
   esac
 
@@ -283,7 +296,101 @@ _cmd_open() {
   # file in place: the reviewer may still have it open, and its unique name
   # means no later batch can pick it up.
   rm -f "${batch}"
-  printf 'approved %s item(s)\n' "$(find "${APPROVED}" -type f | wc -l | tr -d ' ')"
+  # The word actually read, so a fuzzy accept is visible rather than silent.
+  local approved_count
+  approved_count="$(find "${APPROVED}" -type f | wc -l | tr -d ' ')"
+  printf "approved %s item(s) (STATUS read as '%s'%s)\n" \
+    "${approved_count}" "${status}" "${CLASS_WHY:+; ${CLASS_WHY}}"
+}
+
+# Optimal-string-alignment distance: Levenshtein plus one edit for swapping
+# two adjacent letters. That swap is the common typo (APPORVED, APPROVDE), and
+# counting it as one edit lets the approve threshold stay at 1, which plain
+# Levenshtein could not: it scores the swap as 2, and at 2 it also accepts
+# UNAPPROVED, which is two insertions from APPROVED.
+_edit_distance() {
+  awk -v a="$1" -v b="$2" 'BEGIN {
+    n = length(a); m = length(b)
+    for (i = 0; i <= n; i++) d[i, 0] = i
+    for (j = 0; j <= m; j++) d[0, j] = j
+    for (i = 1; i <= n; i++) {
+      for (j = 1; j <= m; j++) {
+        cost = (substr(a, i, 1) == substr(b, j, 1)) ? 0 : 1
+        v = d[i - 1, j] + 1
+        if (d[i, j - 1] + 1 < v) v = d[i, j - 1] + 1
+        if (d[i - 1, j - 1] + cost < v) v = d[i - 1, j - 1] + cost
+        if (i > 1 && j > 1 && substr(a, i, 1) == substr(b, j - 1, 1) &&
+            substr(a, i - 1, 1) == substr(b, j, 1) && d[i - 2, j - 2] + 1 < v)
+          v = d[i - 2, j - 2] + 1
+        d[i, j] = v
+      }
+    }
+    print d[n, m]
+  }'
+}
+
+# Map a raw STATUS word to exactly one of APPROVED, ABORT, PENDING, or
+# UNRECOGNIZED. Sets CLASS, and CLASS_WHY to a reason fit for the terminal.
+#
+# A false approve is the expensive direction, so every rule here leans toward
+# UNRECOGNIZED, which approves nothing and keeps the batch waiting:
+#   - Only trailing . and ! are dropped. Anything else that is not a letter --
+#     a space, a second word, a ? -- makes the word unrecognized, so
+#     "APPROVED?", "NOT APPROVED" and "APPROVED - BUT" never approve.
+#   - A word with a negating prefix never approves, whatever its distance.
+#   - A near-miss counts only at distance 1 (one wrong, missing, extra, or
+#     swapped letter). Distance 2 or more is unrecognized.
+#   - A near-miss that is also within 2 of another keyword is ambiguous, and
+#     unrecognized. The keywords are far enough apart that no distance-1 word
+#     trips this today; it is here so a future keyword cannot make it happen.
+_classify() {
+  local raw="$1" word kw d best="" best_d=99 near=0
+  CLASS=UNRECOGNIZED
+  CLASS_WHY=""
+  word="${raw}"
+  while [[ "${word}" == *[.!] ]]; do word="${word%?}"; done
+  if [[ -z "${word}" ]]; then
+    CLASS_WHY="empty status word"
+    return 0
+  fi
+  if [[ ! "${word}" =~ ^[A-Z]+$ ]]; then
+    CLASS_WHY="only letters, optionally followed by . or !, can match"
+    return 0
+  fi
+  if ((${#word} > 12)); then
+    CLASS_WHY="too long to be APPROVED, ABORT, or PENDING"
+    return 0
+  fi
+  case "${word}" in
+    APPROVED | ABORT | PENDING)
+      CLASS="${word}"
+      [[ "${word}" == "${raw}" ]] || CLASS_WHY="trailing punctuation ignored"
+      return 0
+      ;;
+    UN* | DIS* | NO* | DE*)
+      CLASS_WHY="negating prefix; never read as a keyword"
+      return 0
+      ;;
+    *) ;;
+  esac
+  for kw in APPROVED ABORT PENDING; do
+    d="$(_edit_distance "${word}" "${kw}")"
+    ((d <= 2)) && near=$((near + 1))
+    if ((d < best_d)); then
+      best_d="${d}"
+      best="${kw}"
+    fi
+  done
+  if ((best_d > 1)); then
+    CLASS_WHY="${best_d} edits from ${best}; only 1 is accepted"
+    return 0
+  fi
+  if ((near > 1)); then
+    CLASS_WHY="close to more than one of APPROVED, ABORT, PENDING"
+    return 0
+  fi
+  CLASS="${best}"
+  CLASS_WHY="1 edit from ${best}"
 }
 
 # The status word, or PENDING if the line is missing or unreadable: an

@@ -71,6 +71,10 @@ EOF
 }
 
 _load
+# Set by the sourced _classify; declared here so the reads below are not
+# reads of an unassigned name.
+CLASS=""
+CLASS_WHY=""
 
 # --- _status ----------------------------------------------------------------
 
@@ -500,6 +504,13 @@ cat >"${STUB_BIN}/open" <<'STUB'
 f="${*: -1}"
 printf '%s\n' "${f}" >>"${OPENED_LOG}"
 sed -i.bak "s/^# STATUS: PENDING/# STATUS: ${STUB_STATUS}/" "${f}" && rm -f "${f}.bak"
+# A second save, later: the reviewer fixing a word the poll did not accept.
+# The redirect is load-bearing: without it the background child holds the
+# caller's $(...) pipe open.
+if [[ -n "${STUB_STATUS_LATER:-}" ]]; then
+  (sleep 3 && sed -i.bak "s/^# STATUS: .*/# STATUS: ${STUB_STATUS_LATER}/" "${f}" &&
+    rm -f "${f}.bak") >/dev/null 2>&1 &
+fi
 STUB
 chmod +x "${STUB_BIN}"/*
 
@@ -513,7 +524,7 @@ _open_from() {
   local rc=0
   : >"${OPENED_LOG}"
   printf 'fix(x): staged from %s\n' "$1" >"${PENDING}/item"
-  (cd "$1" && PATH="${STUB_BIN}:${PATH}" && _cmd_open) >/dev/null 2>&1 || rc=$?
+  (cd "$1" && PATH="${STUB_BIN}:${PATH}" && _cmd_open) >"${OPEN_OUT:-/dev/null}" 2>&1 || rc=$?
   cat "${OPENED_LOG}"
   return "${rc}"
 }
@@ -609,6 +620,114 @@ if [[ ! -e "${APPROVED}/item" ]]; then
 else
   _no "the refused foreign buffer approves nothing"
 fi
+
+# --- near-miss status words (claude-config#559) -----------------------------
+
+# The distance arithmetic, against hand-computed values. A swap of two
+# adjacent letters is one edit; UNAPPROVED is two insertions.
+for row in APPORVED:APPROVED:1 APPROVDE:APPROVED:1 APROVED:APPROVED:1 \
+  APPROVEDD:APPROVED:1 APPRVOED:APPROVED:1 UNAPPROVED:APPROVED:2 \
+  APPROVAL:APPROVED:2 ABOUT:ABORT:1 ABORTED:ABORT:2 APPROVED:APPROVED:0; do
+  IFS=: read -r a b want <<<"${row}"
+  got="$(_edit_distance "${a}" "${b}")"
+  if [[ "${got}" == "${want}" ]]; then
+    _ok "distance ${a} -> ${b} is ${want}"
+  else
+    _no "distance ${a} -> ${b} is ${want} (got ${got})"
+  fi
+done
+
+# Forms that approve. Each is one edit or trailing . or ! from APPROVED.
+for w in APPROVED APPROVED. 'APPROVED!!' APPORVED APPROVDE APROVED APPROVEDD \
+  APPROVES APPROVER PAPROVED; do
+  _classify "${w}"
+  if [[ "${CLASS}" == "APPROVED" ]]; then
+    _ok "'${w}' reads as APPROVED"
+  else
+    _no "'${w}' reads as APPROVED (got ${CLASS}: ${CLASS_WHY})"
+  fi
+done
+
+# Forms that must NOT approve. Near-ABORT words abort; everything else is
+# unrecognized (or PENDING), which approves nothing.
+for row in ABORT:ABORT ABROT:ABORT ABOT:ABORT ABORT.:ABORT \
+  PENDING:PENDING PENDIGN:PENDING PENDNG:PENDING \
+  UNAPPROVED:UNRECOGNIZED DISAPPROVED:UNRECOGNIZED NOTAPPROVED:UNRECOGNIZED \
+  'NOT APPROVED':UNRECOGNIZED 'APPROVED NOT':UNRECOGNIZED \
+  'APPROVED?':UNRECOGNIZED 'APPROVED - BUT':UNRECOGNIZED \
+  'APPROVED,':UNRECOGNIZED APPROVAL:UNRECOGNIZED \
+  APRVOED:UNRECOGNIZED APPRVD:UNRECOGNIZED PPROVE:UNRECOGNIZED \
+  APPROVEDXYZ:UNRECOGNIZED ABORTED:UNRECOGNIZED YES:UNRECOGNIZED \
+  OK:UNRECOGNIZED LGTM:UNRECOGNIZED XYZZY:UNRECOGNIZED :UNRECOGNIZED \
+  ...:UNRECOGNIZED APPROVEDAPPROVED:UNRECOGNIZED; do
+  w="${row%:*}"
+  want="${row##*:}"
+  _classify "${w}"
+  if [[ "${CLASS}" == "${want}" ]]; then
+    _ok "'${w}' reads as ${want}, not APPROVED"
+  else
+    _no "'${w}' reads as ${want}, not APPROVED (got ${CLASS}: ${CLASS_WHY})"
+  fi
+done
+
+# Through open: a transposition approves, and the output names the word read.
+rm -f "${APPROVED:?}"/* "${PENDING:?}"/*
+STUB_STATUS=APPORVED
+OUT="${TMP}/open-out.txt"
+export OPEN_OUT="${OUT}"
+rc6=0
+P6="$(_open_from "${TMP}/repos/alpha")" || rc6=$?
+if [[ "${rc6}" == 0 && -f "${APPROVED}/item" && -n "${P6}" && ! -e "${P6}" ]]; then
+  _ok "open: STATUS APPORVED approves the batch"
+else
+  _no "open: STATUS APPORVED approves the batch (rc ${rc6})"
+fi
+if grep -q "STATUS read as 'APPORVED'" "${OUT}"; then
+  _ok "open: a fuzzy approve prints the word it read"
+else
+  _no "open: a fuzzy approve prints the word it read"
+fi
+
+# Through open: a garbage word approves nothing, keeps the batch file, and
+# says why, instead of ending the wait at once.
+rm -f "${APPROVED:?}"/* "${PENDING:?}"/*
+STUB_STATUS=APROVDE
+POLL_TIMEOUT=4
+rc7=0
+P7="$(_open_from "${TMP}/repos/alpha")" || rc7=$?
+if [[ "${rc7}" != 0 ]] && ! compgen -G "${APPROVED}/*" >/dev/null && [[ -f "${PENDING}/item" ]]; then
+  _ok "open: a 2-edit word (APROVDE) approves nothing and leaves the item pending"
+else
+  _no "open: a 2-edit word (APROVDE) approves nothing and leaves the item pending (rc ${rc7})"
+fi
+n_reported="$(grep -c "read STATUS 'APROVDE'; not understood" "${OUT}" || true)"
+if [[ "${n_reported}" == 1 ]]; then
+  _ok "open: an unrecognized word is reported once, with the reason"
+else
+  _no "open: an unrecognized word is reported once, with the reason"
+fi
+if [[ -n "${P7}" && -e "${P7}" ]]; then
+  _ok "open: an unrecognized timeout keeps the batch file"
+else
+  _no "open: an unrecognized timeout keeps the batch file"
+fi
+
+# Through open: fixing the word and saving again approves the same batch.
+rm -f "${APPROVED:?}"/* "${PENDING:?}"/*
+STUB_STATUS=XYZZY
+export STUB_STATUS_LATER=APPROVED
+POLL_TIMEOUT=10
+rc8=0
+P8="$(_open_from "${TMP}/repos/alpha")" || rc8=$?
+if [[ "${rc8}" == 0 && -f "${APPROVED}/item" && -n "${P8}" && ! -e "${P8}" ]] &&
+  grep -q "not understood" "${OUT}"; then
+  _ok "open: a garbage word keeps waiting, and a corrected save approves"
+else
+  _no "open: a garbage word keeps waiting, and a corrected save approves (rc ${rc8})"
+fi
+unset STUB_STATUS_LATER OPEN_OUT
+STUB_STATUS=APPROVED
+POLL_TIMEOUT=6
 
 echo "--- ${pass} passed, ${fail} failed"
 [[ "${fail}" == "0" ]]
