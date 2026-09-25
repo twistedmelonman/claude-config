@@ -34,6 +34,11 @@ unset CDPATH
 #   review.maxLines        - Max lines for full review (default: 1000)
 #   review.skipThreshold   - Skip AI review beyond this (default: 2500)
 #   review.chunkSize       - Max lines per file in chunked mode (default: 800)
+#   review.artifactSkip    - Skip AI review when every staged file is a data
+#                             artifact (bool, default: true). Commit mode only.
+#   review.artifactPatterns - Whitespace-separated globs that REPLACE the
+#                             artifact list (default: '*.log *.tsv *.csv
+#                             docs/scan/* docs/*/scan/*'). `*` matches `/`.
 #   review.model           - Claude model ID for code-reviewer (default: haiku for commits, sonnet for full-diff/codebase)
 #   review.adversarialModel - Claude model ID for adversarial-reviewer (default: claude-sonnet-4-6, always, regardless of mode)
 #   review.arbiterModel    - Claude model ID for the reconciliation arbiter
@@ -47,7 +52,9 @@ unset CDPATH
 #
 # PROGRESSIVE REVIEW STRATEGY:
 #   - Small diffs (≤ maxLines): Full review
-#   - Medium diffs (maxLines to skipThreshold): Chunked file-by-file review
+#   - Medium diffs (maxLines to skipThreshold): Chunked file-by-file review.
+#     Any file that is not reviewed (diff > chunkSize, agent error) BLOCKS
+#     the commit as INCOMPLETE; it is never counted as a pass (#451).
 #   - Large diffs (> skipThreshold): BLOCKED - must split into smaller commits
 #
 # STRICT MODE: This script blocks commits when:
@@ -1578,6 +1585,12 @@ show_large_diff_summary() {
   echo "" >&2
 }
 
+# True when the adversarial-reviewer agent is installed. Shared by the
+# chunked path and the whole-diff path so the two cannot disagree about it.
+_adversarial_reviewer_installed() {
+  find -L "${HOME}/.claude/plugins/marketplaces" -name "adversarial-reviewer.md" -type f 2>/dev/null | grep -q .
+}
+
 perform_chunked_review() {
   local total_lines="$1"
 
@@ -1603,6 +1616,13 @@ perform_chunked_review() {
   local reviewed_files=0
   local skipped_files=0
   local issues_output=""
+  # One "path (reason)" line per file that was NOT reviewed. A non-empty list
+  # means the run is INCOMPLETE and must not report a pass (#451).
+  local unreviewed_list=""
+  # Files handed to a reviewer subshell. The aggregate loop uses it to tell a
+  # file that was never dispatched (already listed above) from one whose
+  # subshell died without writing a result, which must not vanish silently.
+  local dispatched_list=""
 
   # Parallel dispatch: up to CHUNK_PARALLEL claude invocations in flight.
   # Each subshell writes its result (file path on line 1, agent output from
@@ -1636,6 +1656,52 @@ ${commit_msg}
     commit_msg_section=""
   fi
 
+  # adversarial-reviewer: ONE pass over the whole diff, in parallel with the
+  # per-file code-reviewer passes. Issue #558: this path used to call only
+  # code-reviewer, so a chunked commit never got adversarial review and the
+  # log gave no sign of it. Its value is cross-file reasoning, which per-file
+  # chunks cannot give, so it is not chunked. The diff here is at most
+  # review.skipThreshold lines — what full-diff mode already hands it.
+  #
+  # Its output file lives in a subdirectory of _chunk_results. Per-file result
+  # names have every `/` replaced, so no repo path can collide with it.
+  local adv_available=false adv_out_file=""
+  if _adversarial_reviewer_installed; then
+    adv_available=true
+    mkdir -p "${_chunk_results}/meta"
+    adv_out_file="${_chunk_results}/meta/adversarial.out"
+    local adv_prompt
+    adv_prompt="${commit_msg_section}You are performing a pre-commit code review of the WHOLE diff below. It is large, so a second reviewer is also reading it file by file; your job is the cross-file view: how the changes interact, what one file assumes about another, and what fails when they meet.
+
+IMPORTANT: You are being invoked as a focused analysis tool with --no-session-persistence.
+Do NOT output Protocol 0 environment check or any preamble.
+Begin your response directly with the verdict in the specified format below.
+
+${REVIEW_SEVERITY_RULES}
+
+CRITICAL: Respond with this exact format:
+
+VERDICT: [PASS or FAIL]
+
+[If FAIL, list each issue:]
+ISSUE: [one-line description]
+SEVERITY: [BLOCKING, FIX_NOW, or WARNING]
+LOCATION: [file:line]
+DETAILS: [explanation and fix]
+
+Review this diff:
+
+\`\`\`diff
+${DIFF}
+\`\`\`"
+    (
+      _aout=$(invoke_agent "adversarial-reviewer" "${adv_prompt}" "${CACHE_DIR}/adversarial-chunked-${DIFF_HASH}" "${ADVERSARIAL_MODEL_ARGS[@]}") || true
+      printf '%s\n' "${_aout}" >"${adv_out_file}"
+    ) &
+  else
+    log_warn "adversarial-reviewer agent not found - chunked review runs code-reviewer only (see ~/.claude/docs/CUSTOM_AGENTS.md)"
+  fi
+
   # Dispatch phase: build per-file prompt, spawn background invoke_agent.
   # Skip-if-too-large is still serial (and bumps skipped_files directly).
   while IFS= read -r file; do
@@ -1649,8 +1715,10 @@ ${commit_msg}
     file_lines=$(echo "${file_diff}" | wc -l | tr -d ' ')
 
     if [[ ${file_lines} -gt ${REVIEW_CHUNK_SIZE} ]]; then
-      log_warn "Skipping ${file} (${file_lines} lines > ${REVIEW_CHUNK_SIZE} chunk size)"
+      log_warn "Cannot review ${file} (${file_lines} lines > ${REVIEW_CHUNK_SIZE} chunk size)"
       ((skipped_files += 1))
+      unreviewed_list="${unreviewed_list}${file} (${file_lines} lines > chunkSize ${REVIEW_CHUNK_SIZE})
+"
       continue
     fi
 
@@ -1728,6 +1796,8 @@ ${file_diff}
       } >"${_chunk_results}/${_safe_name}"
     ) &
     _chunk_pids+=("$!")
+    dispatched_list="${dispatched_list}${file}
+"
   done <<<"${files}"
 
   # Wait for all remaining background jobs.
@@ -1743,7 +1813,15 @@ ${file_diff}
     _agg_safe="${_rfile//\//__}"
     _agg_safe="${_agg_safe// /_}"
     _result_file="${_chunk_results}/${_agg_safe}"
-    [[ -f "${_result_file}" ]] || continue
+    if [[ ! -f "${_result_file}" ]]; then
+      if grep -Fxq -- "${_rfile}" <<<"${dispatched_list}"; then
+        log_warn "No result for ${_rfile} - reviewer process wrote nothing; file not reviewed"
+        ((skipped_files += 1))
+        unreviewed_list="${unreviewed_list}${_rfile} (reviewer wrote no result)
+"
+      fi
+      continue
+    fi
     _rout=$(tail -n +2 "${_result_file}")
 
     # Synthetic transient-failure verdicts (timeout or agent error) indicate
@@ -1754,8 +1832,10 @@ ${file_diff}
     # followed by SEVERITY/ISSUE/LOCATION lines with no parens on the verdict.
     # Match any "VERDICT: FAIL (" (parenthesis-suffixed) to catch both.
     if echo "${_rout}" | grep -q "VERDICT: FAIL ("; then
-      log_warn "Agent timeout/error for ${_rfile} - skipping this file"
+      log_warn "Agent timeout/error for ${_rfile} - file not reviewed"
       ((skipped_files += 1))
+      unreviewed_list="${unreviewed_list}${_rfile} (agent error or timeout)
+"
       continue
     fi
 
@@ -1783,6 +1863,32 @@ $(strip_structured_blocking "${_rout}")"
     ((reviewed_files += 1))
   done <<<"${files}"
 
+  # Read adversarial-reviewer's result (the `wait` above covered its job).
+  # Same normalisation, downgrade and gate as the whole-diff path, so the
+  # two paths reach the same decision on the same output.
+  local adv_verdict="N/A" adv_status="" adv_output="" adv_display=""
+  if [[ "${adv_available}" == true ]]; then
+    adv_output=$(cat "${adv_out_file}" 2>/dev/null || true)
+    [[ -n "${adv_output//[[:space:]]/}" ]] || adv_output="VERDICT: FAIL (agent error: invoke_agent produced no output)"
+    adv_output=$(downgrade_version_unfamiliarity_findings "${adv_output}")
+    adv_display=$(strip_structured_blocking "${adv_output}")
+    adv_verdict=$(parse_verdict "${adv_output}")
+    if [[ "${adv_verdict}" == "REVISE" ]]; then
+      adv_verdict="FAIL"
+    fi
+    if [[ "${adv_verdict}" != "PASS" && "${adv_verdict}" != "FAIL" ]]; then
+      adv_status="unparseable"
+    elif [[ "${adv_verdict}" == "FAIL" ]] && grep -qE "VERDICT: (FAIL|Revise) \((timeout|agent error)" <<<"${adv_display}"; then
+      adv_status="transient"
+    elif [[ "${adv_verdict}" == "FAIL" ]] && output_blocks "${adv_output}"; then
+      adv_status="blocking"
+    elif [[ "${adv_verdict}" == "FAIL" ]]; then
+      adv_status="warnings"
+    else
+      adv_status="pass"
+    fi
+  fi
+
   rm -rf "${_chunk_results}"
   unset _chunk_results _chunk_pids
 
@@ -1796,10 +1902,24 @@ $(strip_structured_blocking "${_rout}")"
   echo "" >&2
   echo "=== CHUNKED REVIEW SUMMARY ===" >&2
   echo "Reviewed: ${reviewed_files}/${file_count} files" >&2
-  [[ ${skipped_files} -gt 0 ]] && echo "Skipped (too large or errors): ${skipped_files} files" >&2
+  if [[ ${skipped_files} -gt 0 ]]; then
+    echo "NOT reviewed: ${skipped_files} files" >&2
+    printf '%s' "${unreviewed_list}" | sed 's/^/  - /' >&2
+  fi
   echo "Blocking issues: ${blocking_count}" >&2
   echo "Warnings: ${warning_count}" >&2
+  case "${adv_status}" in
+    "") echo "adversarial-reviewer: NOT RUN (agent not installed)" >&2 ;;
+    transient) echo "adversarial-reviewer: NOT COMPLETED (timeout or agent error)" >&2 ;;
+    *) echo "adversarial-reviewer: ${adv_verdict} (whole diff)" >&2 ;;
+  esac
   echo "" >&2
+
+  if [[ -n "${adv_display}" ]]; then
+    echo "=== ADVERSARIAL REVIEWER (whole diff) ===" >&2
+    echo "${adv_display}" >&2
+    echo "" >&2
+  fi
 
   # Write results to REVIEW_LOG (global; || true guards set -e)
   {
@@ -1808,10 +1928,28 @@ $(strip_structured_blocking "${_rout}")"
       "${reviewed_files}" "${file_count}" "${blocking_count}" "${warning_count}"
     if [[ ${skipped_files} -gt 0 ]]; then
       printf 'Files skipped (agent error or oversized chunk): %d\n' "${skipped_files}"
+      printf '%s' "${unreviewed_list}" | sed 's/^/unreviewed: /'
     fi
     if [[ -n "${issues_output}" ]]; then
       printf '%s\n' "${issues_output}"
     fi
+    if [[ -n "${adv_display}" ]]; then
+      printf '=== ADVERSARIAL REVIEWER (whole diff) ===\n%s\n' "${adv_display}"
+    fi
+    # Same verdict lines as the whole-diff path, so the Protocol 4 log check
+    # reads a chunked commit the same way. A reviewer that did not run says
+    # so here rather than leaving the line out.
+    if [[ "${overall_verdict}" == "FAIL" ]]; then
+      printf 'code-reviewer: FAIL\n'
+    else
+      printf 'code-reviewer: PASS (%d/%d files)\n' "${reviewed_files}" "${file_count}"
+    fi
+    case "${adv_status}" in
+      "") printf 'adversarial-reviewer: skipped (agent not installed)\n' ;;
+      transient) printf 'adversarial-reviewer: skipped (timeout or agent error)\n' ;;
+      unparseable) printf 'adversarial-reviewer: FAIL (unparseable)\n' ;;
+      *) printf 'adversarial-reviewer: %s\n' "${adv_verdict}" ;;
+    esac
   } >>"${REVIEW_LOG}" || true
 
   if [[ "${overall_verdict}" == "FAIL" ]]; then
@@ -1822,20 +1960,60 @@ $(strip_structured_blocking "${_rout}")"
     echo "   git commit                        # retry" >&2
     echo "   git config --unset review.maxLines" >&2
     return 1
-  elif [[ ${reviewed_files} -eq 0 && ${file_count} -gt 0 ]]; then
-    # Fail-closed: 0 files reviewed out of a nonzero candidate set means the
-    # review provided no signal at all (every file was skipped due to agent
-    # error, timeout, or oversized chunk). Treating that as a pass makes a
-    # totally-broken review indistinguishable from a genuinely clean diff.
-    # Issue #200.
-    log_error "Chunked review reviewed 0/${file_count} files (all skipped) - cannot verify diff is safe"
+  elif [[ "${adv_status}" == "blocking" ]]; then
+    log_error "adversarial-reviewer found issues - commit rejected"
+    log_error "Note: the per-file code-reviewer passes did not block; adversarial-reviewer read the whole diff"
+    return 1
+  elif [[ "${adv_status}" == "unparseable" ]]; then
+    log_error "Could not parse adversarial-reviewer verdict"
+    describe_unparseable_verdict "${adv_output}"
+    log_error "BLOCKING: Cannot verify adversarial review result"
+    return 1
+  elif [[ ${skipped_files} -gt 0 ]]; then
+    # Fail-closed on ANY unreviewed file, not only when all were skipped.
+    # #200 closed the 0/N case; #451 is the partial case: a 2625-line commit
+    # reviewed README.md and CLAUDE.md, skipped the 1029-line script and its
+    # 1351-line test suite as oversized, and printed "Chunked review passed".
+    # On a large diff the biggest file is the one most likely to be skipped,
+    # so a partial pass reads the prose and waves the code through.
+    printf 'chunked: INCOMPLETE (%d/%d files not reviewed)\n' "${skipped_files}" "${file_count}" >>"${REVIEW_LOG}" || true
+    log_error "Chunked review INCOMPLETE: ${skipped_files}/${file_count} files were not reviewed - cannot verify diff is safe"
     echo "" >&2
-    echo "💡 All files were skipped (agent error, timeout, or oversized chunk)." >&2
-    echo "   Check the log above for per-file skip reasons, then retry or review manually:" >&2
-    echo "   git diff --cached | claude --agent code-reviewer -p --tools \"\"" >&2
+    echo "💡 Not reviewed:" >&2
+    printf '%s' "${unreviewed_list}" | sed 's/^/   - /' >&2
+    echo "   Oversized file: raise the per-file limit above its diff size, e.g." >&2
+    echo "     git config review.chunkSize <lines>   (current: ${REVIEW_CHUNK_SIZE})" >&2
+    echo "   or split the commit so the file is reviewed on its own." >&2
+    echo "   Agent error/timeout: retry the commit, or raise review.timeout." >&2
+    return 1
+  elif [[ ${reviewed_files} -eq 0 && ${file_count} -gt 0 ]]; then
+    # Fail-closed backstop from #200: nothing was reviewed and nothing was
+    # listed as skipped (e.g. every per-file diff came back empty). No
+    # review signal is not a pass.
+    printf 'chunked: INCOMPLETE (0/%d files reviewed)\n' "${file_count}" >>"${REVIEW_LOG}" || true
+    log_error "Chunked review reviewed 0/${file_count} files - cannot verify diff is safe"
+    echo "   Review manually: git diff --cached | claude --agent code-reviewer -p --tools \"\"" >&2
     return 1
   else
-    log_success "Chunked review passed (${reviewed_files} files reviewed)"
+    case "${adv_status}" in
+      "")
+        log_warn "adversarial-reviewer did NOT run on this commit (agent not installed)"
+        log_success "Chunked review passed (${reviewed_files} files reviewed; code-reviewer only)"
+        ;;
+      transient)
+        # Non-blocking, as on the whole-diff path, but never silent.
+        log_warn "adversarial-reviewer timed out or errored - it did NOT review this commit (non-blocking)"
+        log_warn "  Re-run: git config review.timeout 300, then retry the commit"
+        log_success "Chunked review passed (${reviewed_files} files reviewed; code-reviewer only)"
+        ;;
+      warnings)
+        log_warn "adversarial-reviewer found warnings (non-blocking)"
+        log_success "Chunked review passed (${reviewed_files} files reviewed; code-reviewer + adversarial-reviewer)"
+        ;;
+      *)
+        log_success "Chunked review passed (${reviewed_files} files reviewed; code-reviewer + adversarial-reviewer)"
+        ;;
+    esac
     return 0
   fi
 }
@@ -1984,6 +2162,59 @@ if [[ -n "${CHANGED_FILES}" ]]; then
   fi
 fi
 
+# Skip code review for data artifacts - scan logs, TSV/CSV exports.
+# Same all-or-nothing shape as the lockfile check: one code file in the set
+# and the whole commit is reviewed. Issue #481: a commit of 42 scan logs was
+# split six ways to get under the size gate and each piece was AI-reviewed as
+# if it were code.
+#
+# Per-repo overrides (repo-local beats global, like every review.* key):
+#   review.artifactSkip=false   turn the skip off entirely
+#   review.artifactPatterns     whitespace-separated globs that REPLACE the
+#                               default list, e.g. '*.log' to keep CSVs reviewed
+# Each glob becomes an anchored ERE: `*` matches any run of characters,
+# including `/`, and `?` matches one character.
+if [[ -n "${CHANGED_FILES}" ]]; then
+  _artifact_skip=$(git config --get --type=bool review.artifactSkip 2>/dev/null || echo "true")
+  if [[ "${_artifact_skip}" == "true" ]]; then
+    _artifact_patterns=$(git config --get review.artifactPatterns 2>/dev/null || echo "")
+    [[ -n "${_artifact_patterns//[[:space:]]/}" ]] \
+      || _artifact_patterns='*.log *.tsv *.csv docs/scan/* docs/*/scan/*'
+    # Escape ERE metacharacters first, then translate the two glob wildcards.
+    # `[` sits last in the bracket list: `[.` would open a collating element.
+    # One pattern per line in, one alternation out.
+    _artifact_re=$(tr -s '[:space:]' '\n' <<<"${_artifact_patterns}" \
+      | grep -v '^$' \
+      | sed -e 's/[]+^(){}|$.[\]/\\&/g' -e 's/\*/.*/g' -e 's/?/./g' \
+      | paste -sd '|' -) || _artifact_re=""
+    _non_artifact=""
+    if [[ -n "${_artifact_re}" ]]; then
+      # The sed above escaped only a `$` typed INSIDE a glob. This trailing `$`
+      # is the real end-of-string anchor: in double quotes a `$` before the
+      # closing quote is literal, so the ERE ends `)$`. Pinned by the
+      # artifact-only tests in tests/test_run_review_generated_file_skip_order.bats.
+      _artifact_re="^(${_artifact_re})$"
+      while IFS= read -r _af; do
+        [[ -z "${_af}" ]] && continue
+        if ! [[ "${_af}" =~ ${_artifact_re} ]]; then
+          _non_artifact="${_af}"
+          break
+        fi
+      done <<<"${CHANGED_FILES}"
+    else
+      _non_artifact="(no usable review.artifactPatterns)"
+    fi
+    if [[ -z "${_non_artifact}" ]]; then
+      log_info "Artifact-only changes detected - skipping code review (patterns: ${_artifact_patterns})"
+      log_info "  To review these anyway: git config review.artifactSkip false"
+      printf 'skipped: artifact-only (patterns: %s)\n' "${_artifact_patterns}" >>"${REVIEW_LOG}" || true
+      exit 0
+    fi
+    unset _artifact_patterns _artifact_re _non_artifact _af
+  fi
+  unset _artifact_skip
+fi
+
 # Progressive review strategy based on diff size
 DIFF_LINES=$(echo "${DIFF}" | wc -l | tr -d ' ')
 
@@ -1995,6 +2226,9 @@ if [[ "${REVIEW_MODE}" != "full-diff" && "${REVIEW_MODE}" != "codebase" ]] && [[
   log_error "Options:"
   log_error "  1. Split into smaller commits (recommended)"
   log_error "  2. Increase threshold: git config review.skipThreshold 5000"
+  log_error "     Chunked review then needs every file's diff under review.chunkSize"
+  log_error "     (current: ${REVIEW_CHUNK_SIZE}); a larger file blocks the commit"
+  log_error "     as unreviewed, so raise review.chunkSize too if one is bigger."
   printf 'blocked: diff too large (%d lines > %d threshold)\n' "${DIFF_LINES}" "${REVIEW_SKIP_THRESHOLD}" >>"${REVIEW_LOG}" || true
   exit 1
 
@@ -2568,7 +2802,7 @@ fi
 ADVERSARIAL_OUTPUT=""
 ADVERSARIAL_VERDICT="N/A"
 ADVERSARIAL_AVAILABLE=true
-if ! find -L "${HOME}/.claude/plugins/marketplaces" -name "adversarial-reviewer.md" -type f 2>/dev/null | grep -q .; then
+if ! _adversarial_reviewer_installed; then
   log_warn "adversarial-reviewer agent not found - skipping (see ~/.claude/docs/CUSTOM_AGENTS.md for setup)"
   ADVERSARIAL_AVAILABLE=false
 fi

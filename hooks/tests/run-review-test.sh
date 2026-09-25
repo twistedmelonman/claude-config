@@ -9,7 +9,8 @@
 #
 #   1. set -e propagation: transient Claude CLI failure must produce log output beyond bare exit_code
 #   2. Chunked review log: reviewer output must appear in REVIEW_LOG when chunked path runs
-#   3. Chunked review with 0/N files reviewed is fail-closed (issue #200); 3b: partial skip still passes
+#   3. Chunked review with 0/N files reviewed is fail-closed (issue #200); 3b: a partial
+#      skip is fail-closed too and names the unreviewed files (issue #451)
 #   4. Stderr hint: chunked review failure (blocking verdict) must emit workaround hint
 #   5. review.timeout git config is honoured
 #   6. make_mock_claude must handle double-quotes in output without script syntax errors
@@ -402,16 +403,17 @@ assert_contains \
   "${log_content}"
 
 # =========================================================
-# TEST 3b: Partial skip (some files reviewed) is still non-fatal
+# TEST 3b: Partial skip (some files reviewed) is ALSO fail-closed (#451)
 #
-# Regression guard for #200: the fail-closed behavior above must trigger
-# ONLY when reviewed_files is exactly 0. If at least one file was actually
-# reviewed (and passed), a mix of skipped + reviewed files must still allow
-# the commit through — the fix should not regress the original "one bad
-# file doesn't kill the whole batch" behavior.
+# This test used to assert the opposite: that one reviewed file plus four
+# skipped files passed. That is the false pass #451 reported — a 2625-line
+# commit reviewed its two prose files, skipped the 1029-line script and its
+# test suite, and printed "Chunked review passed". A file that was not
+# reviewed is not a pass, whatever the other files did. The run now blocks
+# as INCOMPLETE and names every unreviewed file in the log.
 # =========================================================
 echo ""
-echo "=== Test 3b: Partial skip (some files reviewed) does not block commit ==="
+echo "=== Test 3b: Partial skip (some files reviewed) blocks as INCOMPLETE (#451) ==="
 
 setup_repo
 stage_large_change
@@ -450,13 +452,23 @@ cd - >/dev/null
 log_content_t3b="$(cat "${TEST3B_LOG}" 2>/dev/null || echo "")"
 
 assert_eq \
-  "partial skip (1 reviewed, 4 skipped) still passes (exit 0)" \
-  "0" \
+  "partial skip (1 reviewed, 4 skipped) blocks commit (exit 1) - issue #451" \
+  "1" \
   "${exit_code_t3b}"
 
 assert_contains \
   "log shows at least 1 file was reviewed" \
   "Reviewed: 1/" \
+  "${log_content_t3b}"
+
+assert_contains \
+  "log records the run as INCOMPLETE - issue #451" \
+  "chunked: INCOMPLETE" \
+  "${log_content_t3b}"
+
+assert_contains \
+  "log names an unreviewed file - issue #451" \
+  "unreviewed: file2.sh" \
   "${log_content_t3b}"
 
 # =========================================================
