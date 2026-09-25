@@ -52,7 +52,9 @@ unset CDPATH
 #
 # PROGRESSIVE REVIEW STRATEGY:
 #   - Small diffs (≤ maxLines): Full review
-#   - Medium diffs (maxLines to skipThreshold): Chunked file-by-file review
+#   - Medium diffs (maxLines to skipThreshold): Chunked file-by-file review.
+#     Any file that is not reviewed (diff > chunkSize, agent error) BLOCKS
+#     the commit as INCOMPLETE; it is never counted as a pass (#451).
 #   - Large diffs (> skipThreshold): BLOCKED - must split into smaller commits
 #
 # STRICT MODE: This script blocks commits when:
@@ -1608,6 +1610,13 @@ perform_chunked_review() {
   local reviewed_files=0
   local skipped_files=0
   local issues_output=""
+  # One "path (reason)" line per file that was NOT reviewed. A non-empty list
+  # means the run is INCOMPLETE and must not report a pass (#451).
+  local unreviewed_list=""
+  # Files handed to a reviewer subshell. The aggregate loop uses it to tell a
+  # file that was never dispatched (already listed above) from one whose
+  # subshell died without writing a result, which must not vanish silently.
+  local dispatched_list=""
 
   # Parallel dispatch: up to CHUNK_PARALLEL claude invocations in flight.
   # Each subshell writes its result (file path on line 1, agent output from
@@ -1654,8 +1663,10 @@ ${commit_msg}
     file_lines=$(echo "${file_diff}" | wc -l | tr -d ' ')
 
     if [[ ${file_lines} -gt ${REVIEW_CHUNK_SIZE} ]]; then
-      log_warn "Skipping ${file} (${file_lines} lines > ${REVIEW_CHUNK_SIZE} chunk size)"
+      log_warn "Cannot review ${file} (${file_lines} lines > ${REVIEW_CHUNK_SIZE} chunk size)"
       ((skipped_files += 1))
+      unreviewed_list="${unreviewed_list}${file} (${file_lines} lines > chunkSize ${REVIEW_CHUNK_SIZE})
+"
       continue
     fi
 
@@ -1733,6 +1744,8 @@ ${file_diff}
       } >"${_chunk_results}/${_safe_name}"
     ) &
     _chunk_pids+=("$!")
+    dispatched_list="${dispatched_list}${file}
+"
   done <<<"${files}"
 
   # Wait for all remaining background jobs.
@@ -1748,7 +1761,15 @@ ${file_diff}
     _agg_safe="${_rfile//\//__}"
     _agg_safe="${_agg_safe// /_}"
     _result_file="${_chunk_results}/${_agg_safe}"
-    [[ -f "${_result_file}" ]] || continue
+    if [[ ! -f "${_result_file}" ]]; then
+      if grep -Fxq -- "${_rfile}" <<<"${dispatched_list}"; then
+        log_warn "No result for ${_rfile} - reviewer process wrote nothing; file not reviewed"
+        ((skipped_files += 1))
+        unreviewed_list="${unreviewed_list}${_rfile} (reviewer wrote no result)
+"
+      fi
+      continue
+    fi
     _rout=$(tail -n +2 "${_result_file}")
 
     # Synthetic transient-failure verdicts (timeout or agent error) indicate
@@ -1759,8 +1780,10 @@ ${file_diff}
     # followed by SEVERITY/ISSUE/LOCATION lines with no parens on the verdict.
     # Match any "VERDICT: FAIL (" (parenthesis-suffixed) to catch both.
     if echo "${_rout}" | grep -q "VERDICT: FAIL ("; then
-      log_warn "Agent timeout/error for ${_rfile} - skipping this file"
+      log_warn "Agent timeout/error for ${_rfile} - file not reviewed"
       ((skipped_files += 1))
+      unreviewed_list="${unreviewed_list}${_rfile} (agent error or timeout)
+"
       continue
     fi
 
@@ -1801,7 +1824,10 @@ $(strip_structured_blocking "${_rout}")"
   echo "" >&2
   echo "=== CHUNKED REVIEW SUMMARY ===" >&2
   echo "Reviewed: ${reviewed_files}/${file_count} files" >&2
-  [[ ${skipped_files} -gt 0 ]] && echo "Skipped (too large or errors): ${skipped_files} files" >&2
+  if [[ ${skipped_files} -gt 0 ]]; then
+    echo "NOT reviewed: ${skipped_files} files" >&2
+    printf '%s' "${unreviewed_list}" | sed 's/^/  - /' >&2
+  fi
   echo "Blocking issues: ${blocking_count}" >&2
   echo "Warnings: ${warning_count}" >&2
   echo "" >&2
@@ -1813,6 +1839,7 @@ $(strip_structured_blocking "${_rout}")"
       "${reviewed_files}" "${file_count}" "${blocking_count}" "${warning_count}"
     if [[ ${skipped_files} -gt 0 ]]; then
       printf 'Files skipped (agent error or oversized chunk): %d\n' "${skipped_files}"
+      printf '%s' "${unreviewed_list}" | sed 's/^/unreviewed: /'
     fi
     if [[ -n "${issues_output}" ]]; then
       printf '%s\n' "${issues_output}"
@@ -1827,17 +1854,30 @@ $(strip_structured_blocking "${_rout}")"
     echo "   git commit                        # retry" >&2
     echo "   git config --unset review.maxLines" >&2
     return 1
-  elif [[ ${reviewed_files} -eq 0 && ${file_count} -gt 0 ]]; then
-    # Fail-closed: 0 files reviewed out of a nonzero candidate set means the
-    # review provided no signal at all (every file was skipped due to agent
-    # error, timeout, or oversized chunk). Treating that as a pass makes a
-    # totally-broken review indistinguishable from a genuinely clean diff.
-    # Issue #200.
-    log_error "Chunked review reviewed 0/${file_count} files (all skipped) - cannot verify diff is safe"
+  elif [[ ${skipped_files} -gt 0 ]]; then
+    # Fail-closed on ANY unreviewed file, not only when all were skipped.
+    # #200 closed the 0/N case; #451 is the partial case: a 2625-line commit
+    # reviewed README.md and CLAUDE.md, skipped the 1029-line script and its
+    # 1351-line test suite as oversized, and printed "Chunked review passed".
+    # On a large diff the biggest file is the one most likely to be skipped,
+    # so a partial pass reads the prose and waves the code through.
+    printf 'chunked: INCOMPLETE (%d/%d files not reviewed)\n' "${skipped_files}" "${file_count}" >>"${REVIEW_LOG}" || true
+    log_error "Chunked review INCOMPLETE: ${skipped_files}/${file_count} files were not reviewed - cannot verify diff is safe"
     echo "" >&2
-    echo "💡 All files were skipped (agent error, timeout, or oversized chunk)." >&2
-    echo "   Check the log above for per-file skip reasons, then retry or review manually:" >&2
-    echo "   git diff --cached | claude --agent code-reviewer -p --tools \"\"" >&2
+    echo "💡 Not reviewed:" >&2
+    printf '%s' "${unreviewed_list}" | sed 's/^/   - /' >&2
+    echo "   Oversized file: raise the per-file limit above its diff size, e.g." >&2
+    echo "     git config review.chunkSize <lines>   (current: ${REVIEW_CHUNK_SIZE})" >&2
+    echo "   or split the commit so the file is reviewed on its own." >&2
+    echo "   Agent error/timeout: retry the commit, or raise review.timeout." >&2
+    return 1
+  elif [[ ${reviewed_files} -eq 0 && ${file_count} -gt 0 ]]; then
+    # Fail-closed backstop from #200: nothing was reviewed and nothing was
+    # listed as skipped (e.g. every per-file diff came back empty). No
+    # review signal is not a pass.
+    printf 'chunked: INCOMPLETE (0/%d files reviewed)\n' "${file_count}" >>"${REVIEW_LOG}" || true
+    log_error "Chunked review reviewed 0/${file_count} files - cannot verify diff is safe"
+    echo "   Review manually: git diff --cached | claude --agent code-reviewer -p --tools \"\"" >&2
     return 1
   else
     log_success "Chunked review passed (${reviewed_files} files reviewed)"
@@ -2053,6 +2093,9 @@ if [[ "${REVIEW_MODE}" != "full-diff" && "${REVIEW_MODE}" != "codebase" ]] && [[
   log_error "Options:"
   log_error "  1. Split into smaller commits (recommended)"
   log_error "  2. Increase threshold: git config review.skipThreshold 5000"
+  log_error "     Chunked review then needs every file's diff under review.chunkSize"
+  log_error "     (current: ${REVIEW_CHUNK_SIZE}); a larger file blocks the commit"
+  log_error "     as unreviewed, so raise review.chunkSize too if one is bigger."
   printf 'blocked: diff too large (%d lines > %d threshold)\n' "${DIFF_LINES}" "${REVIEW_SKIP_THRESHOLD}" >>"${REVIEW_LOG}" || true
   exit 1
 
