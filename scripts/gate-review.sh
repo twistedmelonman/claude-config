@@ -47,7 +47,20 @@ mkdir -p "${PENDING}" "${APPROVED}"
 
 _die() {
   printf 'gate-review: %s\n' "$1" >&2
+  _kept_note
   exit 1
+}
+
+# Where the reviewer's text is, said on every way out of `open` that does not
+# consume it. Set once the buffer exists; a buffer is only ever removed after
+# its text went into approved/ (APPROVED) or into a newer buffer (carried).
+KEPT_BATCH=""
+_kept_note() {
+  [[ -n "${KEPT_BATCH}" && -f "${KEPT_BATCH}" ]] || return 0
+  {
+    echo "gate-review: your text, with any edits, is kept at ${KEPT_BATCH}"
+    echo "gate-review: the next open for these items starts from it."
+  } >&2
 }
 
 # Aqua means a window server exists. Anything else -- SSH, a headless daemon --
@@ -175,13 +188,19 @@ _cmd_stage() {
 # Every component is reduced to [A-Za-z0-9._-]: branch names carry `/`, and a
 # repo directory can hold spaces.
 _batch_path() {
-  local nonce="$1" dir top repo branch
+  local nonce="$1" dir
   dir="${GATE_DIR}/batches"
   mkdir -p "${dir}"
   nonce="${nonce//[^A-Za-z0-9._-]/-}"
+  printf '%s/%s-%s.txt\n' "${dir}" "$(_batch_key)" "${nonce}"
+}
+
+# The <repo>-<branch> part of a batch file name, or `batch` outside a repo.
+_batch_key() {
+  local top repo branch
   top="$(git rev-parse --show-toplevel 2>/dev/null)" || top=""
   if [[ -z "${top}" ]]; then
-    printf '%s/batch-%s.txt\n' "${dir}" "${nonce}"
+    printf 'batch\n'
     return 0
   fi
   repo="${top##*/}"
@@ -192,7 +211,67 @@ _batch_path() {
     branch="detached-${branch}"
   fi
   branch="${branch//[^A-Za-z0-9._-]/-}"
-  printf '%s/%s-%s-%s.txt\n' "${dir}" "${repo}" "${branch}" "${nonce}"
+  printf '%s-%s\n' "${repo}" "${branch}"
+}
+
+# Read a buffer back WITHOUT approving anything, into $2:
+#   names          the item names, one per line, in buffer order
+#   body/<name>    each item's text, trailing newlines stripped
+#   origin/<name>  the hash of the staged text the buffer was built from
+#   previous       the `# >>> PREVIOUS TEXT` blocks from the header, verbatim
+# Returns 1 on a name that could not have been staged, or a repeated one, so a
+# hand-mangled buffer is left on disk rather than half carried.
+_parse_buffer() {
+  local file="$1" out="$2" line name="" body="" in_block=0
+  mkdir -p "${out}/body" "${out}/origin"
+  : >"${out}/names"
+  : >"${out}/previous"
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    if [[ "${line}" == '=== '*' ===' ]]; then
+      [[ -z "${name}" ]] || printf '%s' "$(printf '%s' "${body}")" >"${out}/body/${name}"
+      name="${line#=== }"
+      name="${name% ===}"
+      [[ "${name}" =~ ^[A-Za-z0-9._-]+$ && ! -e "${out}/body/${name}" ]] || return 1
+      printf '%s\n' "${name}" >>"${out}/names"
+      body=""
+      continue
+    fi
+    if [[ -n "${name}" ]]; then
+      body+="${line}"$'\n'
+      continue
+    fi
+    # Only the reviewer's own earlier text is carried; notes are rebuilt.
+    [[ "${line}" == '# >>> PREVIOUS TEXT of '* ]] && in_block=1
+    if ((in_block)); then
+      printf '%s\n' "${line}" >>"${out}/previous"
+      [[ "${line}" == '# <<<'* ]] && in_block=0
+      continue
+    fi
+    if [[ "${line}" =~ ^#\ ORIGIN\ ([A-Za-z0-9._-]+):\ ([0-9a-f]+)$ ]]; then
+      printf '%s' "${BASH_REMATCH[2]}" >"${out}/origin/${BASH_REMATCH[1]}"
+    fi
+  done <"${file}"
+  [[ -z "${name}" ]] || printf '%s' "$(printf '%s' "${body}")" >"${out}/body/${name}"
+  return 0
+}
+
+# Quote text into the framing header, where _split_batch never reads it.
+_quote() {
+  sed 's/^/# | /' "$1"
+  [[ -z "$(tail -c1 "$1")" ]] || echo ""
+}
+
+# Earlier buffers for this repo/branch: <key>-<pid>-<epoch>.txt, nothing else.
+# The strict tail keeps branch `main` from matching `main-foo`'s files.
+_prior_buffers() {
+  local key="$1" f tail
+  for f in "${GATE_DIR}/batches/${key}"-*.txt; do
+    [[ -f "${f}" ]] || continue
+    tail="${f##*/}"
+    tail="${tail#"${key}"-}"
+    [[ "${tail%.txt}" =~ ^[0-9]+-[0-9]+$ ]] && printf '%s\n' "${f}"
+  done
+  return 0
 }
 
 _cmd_open() {
@@ -216,6 +295,31 @@ _cmd_open() {
   nonce="$$-$(date +%s)"
   batch="$(_batch_path "${nonce}")"
 
+  # Start from the reviewer's last text for these items, not the staged
+  # originals. Every way out of an earlier open except APPROVED left its
+  # buffer on disk; opening the staged text instead threw those edits away
+  # (observed 2026-09-25: a mistyped STATUS word, then a fresh open showing
+  # the original text). Only a buffer for this repo/branch with exactly the
+  # staged item names is a candidate; the newest one wins.
+  local work want cand prior="" skipped=()
+  work="$(mktemp -d)"
+  want="$(find "${PENDING}" -type f -exec basename {} \; | sort)"
+  local i=0
+  while IFS= read -r cand; do
+    [[ -n "${cand}" && "${cand}" != "${batch}" ]] || continue
+    i=$((i + 1))
+    if _parse_buffer "${cand}" "${work}/${i}" &&
+      [[ "$(sort "${work}/${i}/names")" == "${want}" ]] &&
+      [[ -z "${prior}" || "${cand}" -nt "${prior}" ]]; then
+      [[ -z "${prior}" ]] || skipped+=("${prior}")
+      prior="${cand}"
+      rm -rf "${work}/p"
+      mv "${work}/${i}" "${work}/p"
+    else
+      skipped+=("${cand}")
+    fi
+  done < <(_prior_buffers "$(_batch_key)")
+
   # One buffer for the whole set: the reviewer reads and edits everything in a
   # single pass, which is the point of batching.
   {
@@ -229,7 +333,8 @@ _cmd_open() {
     done
     echo "#"
     echo "# TO APPROVE: change PENDING above to APPROVED, then save."
-    echo "# TO ABORT:   change PENDING above to ABORT, then save."
+    echo "# TO ABORT:   change PENDING above to ABORT, then save. Your text"
+    echo "#             is kept, and the next open for these items starts from it."
     echo "#"
     echo "# An explicit word, not a bare save: BBEdit does not write an"
     echo "# unmodified document, so there is no save to detect. Leaving this"
@@ -240,12 +345,70 @@ _cmd_open() {
     echo "# Lines starting with # are stripped from the approved text."
     echo "#"
     echo "# BATCH: ${nonce}"
+    # What each item was built from, so a later open can tell the reviewer's
+    # edits apart from a restage. Header lines: never approved.
     for f in "${PENDING}"/*; do
+      echo "# ORIGIN ${f##*/}: $(_hash "${f}")"
+    done
+    if [[ -n "${prior}" ]]; then
+      echo "#"
+      echo "# CARRIED FORWARD: the items below are your text from the last"
+      echo "# review of these items (${prior##*/}). STATUS is reset to PENDING."
+      cat "${work}/p/previous"
+    fi
+    local n old
+    for f in "${PENDING}"/*; do
+      n="${f##*/}"
+      old="${work}/p/body/${n}"
+      [[ -n "${prior}" && -f "${old}" ]] || continue
+      if [[ "$(cat "${work}/p/origin/${n}" 2>/dev/null)" != "$(_hash "${f}")" &&
+        "$(_hash "${old}")" != "$(_hash "${f}")" ]]; then
+        if [[ ! -s "${old}" ]]; then
+          echo "# >>> ${n}: you emptied it last review, but the staged text changed"
+          echo "# since, so ${n} below is the NEW staged text. Empty it again to drop it."
+          echo "# <<< end of note on ${n}"
+          continue
+        fi
+        echo "# >>> PREVIOUS TEXT of ${n}: the staged text changed since your last"
+        echo "# review, so ${n} below is the NEW staged text. Your earlier text is"
+        echo "# quoted here; copy what you want into ${n}. Quoted lines are never approved."
+        _quote "${old}"
+        echo "# <<< end of previous text of ${n}"
+      elif [[ ! -s "${old}" ]]; then
+        echo "# >>> ${n} is EMPTY because you emptied it last review, so it stays"
+        echo "# dropped unless you add text. The staged text, for reference:"
+        _quote "${f}"
+        echo "# <<< end of staged text of ${n}"
+      fi
+    done
+    for f in "${PENDING}"/*; do
+      n="${f##*/}"
+      old="${work}/p/body/${n}"
       echo ""
-      echo "=== ${f##*/} ==="
-      cat "${f}"
+      echo "=== ${n} ==="
+      if [[ -n "${prior}" && -f "${old}" ]] &&
+        [[ "$(cat "${work}/p/origin/${n}" 2>/dev/null)" == "$(_hash "${f}")" ||
+          "$(_hash "${old}")" == "$(_hash "${f}")" ]]; then
+        cat "${old}"
+        echo ""
+      else
+        cat "${f}"
+      fi
     done
   } >"${batch}"
+  KEPT_BATCH="${batch}"
+  # A killed or interrupted wait leaves the buffer where it is; say where.
+  trap '_kept_note; exit 130' INT TERM HUP
+  if [[ -n "${prior}" ]]; then
+    # Its text now lives in the new buffer, so the old file is redundant.
+    rm -f "${prior}"
+    printf 'gate-review: carried your text forward from %s into %s\n' \
+      "${prior##*/}" "${batch##*/}" >&2
+  fi
+  for cand in "${skipped[@]}"; do
+    printf 'gate-review: earlier buffer kept, not carried (different items): %s\n' "${cand}" >&2
+  done
+  rm -rf "${work}"
 
   printf 'opening %s item(s) in %s\n' "${count}" "${EDITOR_APP}" >&2
   open -a "${EDITOR_APP}" "${batch}" || _die "could not open ${EDITOR_APP}"
@@ -278,8 +441,9 @@ _cmd_open() {
   case "${CLASS}" in
     APPROVED) ;;
     ABORT)
+      # ABORT means "not approved", not "discard my text": approvals go, the
+      # buffer stays.
       rm -f "${APPROVED:?}"/*
-      rm -f "${batch}"
       _die "ABORT (STATUS read as '${status}'); nothing approved"
       ;;
     PENDING)
@@ -291,11 +455,11 @@ _cmd_open() {
   esac
 
   _split_batch "${batch}" "${nonce}"
-  # Only this batch's own file, and only once it is consumed, so batches/ does
-  # not grow without bound. A PENDING timeout or a refused split leaves the
-  # file in place: the reviewer may still have it open, and its unique name
-  # means no later batch can pick it up.
+  # Only this batch's own file, and only once its text is in approved/. Every
+  # other exit leaves it for the next open to carry forward; its nonce is
+  # never reused, so it cannot be split as approved by another run.
   rm -f "${batch}"
+  KEPT_BATCH=""
   # The word actually read, so a fuzzy accept is visible rather than silent.
   local approved_count
   approved_count="$(find "${APPROVED}" -type f | wc -l | tr -d ' ')"
