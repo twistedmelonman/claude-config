@@ -557,7 +557,8 @@ output_blocks() {
 # relabelled from blocking to incomplete. The Revise form is covered for
 # #172.
 is_transient_verdict() {
-  printf '%s\n' "$1" | grep -qE '^VERDICT: (FAIL|Revise) \((timeout|agent error)'
+  # Only the exact synthetic forms: "(timeout)" and "(agent error: ...)".
+  printf '%s\n' "$1" | grep -qE '^VERDICT: (FAIL|Revise) \((timeout\)|agent error:)'
 }
 
 # One-word reason for a transient verdict, for the review log.
