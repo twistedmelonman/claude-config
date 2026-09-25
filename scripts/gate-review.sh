@@ -395,7 +395,10 @@ _cmd_open() {
         cat "${f}"
       fi
     done
-  } >"${batch}"
+  } >"${batch}.tmp"
+  # Written aside, then renamed: a kill mid-write must not leave a truncated
+  # buffer under a name the next open would carry forward.
+  mv "${batch}.tmp" "${batch}"
   KEPT_BATCH="${batch}"
   # A killed or interrupted wait leaves the buffer where it is; say where.
   trap '_kept_note; exit 130' INT TERM HUP

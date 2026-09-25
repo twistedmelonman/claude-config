@@ -857,7 +857,7 @@ else
   _no "edits: a carried buffer gets the new run's batch id (old '${old_nonce}', new '${new_nonce}')"
 fi
 if [[ "${rcd}" != 0 ]] && ! compgen -G "${APPROVED}/*" >/dev/null &&
-  [[ -f "${PD2}" ]] && grep -q 'EDIT-NONCE from' "${PD2}"; then
+  [[ -f "${PD2}" ]] && grep -q 'EDIT-NONCE from' "${PD2}" && grep -q "kept at ${PD2}" "${OUT}"; then
   _ok "edits: the old batch id cannot approve the carried buffer, and the text is kept"
 else
   _no "edits: the old batch id cannot approve the carried buffer, and the text is kept (rc ${rcd})"
