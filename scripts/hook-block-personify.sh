@@ -61,8 +61,8 @@ cmd=$(printf '%s\n' "${input}" | jq -r '.tool_input.command // empty')
 #
 # Handled: command separators (`&&`, `||`, `;`, `|`, `&`, `(`, `{`, backtick),
 # the `then`/`do` keywords, an opening quote of any kind, `env`/`command`/
-# `sudo` wrappers, a leading path on the binary, and global options before the
-# subcommand.
+# `sudo` wrappers, a leading path on the binary, global options before the
+# subcommand, and backslash-continued lines (_join_continuations, below).
 #
 # NOT handled, and not closeable at this layer: aliases and shell functions,
 # obfuscation through variables (`G=git; $G commit`), and any construction that
@@ -78,9 +78,87 @@ _wrap="((env|command|sudo)[[:space:]]+)*"
 _path="([^[:space:]|;&(){${bt}]*/)?"
 _optval="(\"[^\"]*\"[[:space:]]+|'[^']*'[[:space:]]+|[^-][^|;&${bt}[:space:]]*[[:space:]]+)?"
 
+# Join backslash-continued lines into one logical line, as bash does, before
+# anything else looks at the command (claude-config#595). The hook judges one
+# line at a time, so without this `gh pr create --title t \` followed by
+# `--body x` put the body flag on a line with no verb, and it was never checked.
+#
+# The join follows bash: `\<newline>` is removed outright (no space), outside
+# quotes and inside double quotes. It is NOT a continuation, and the newline
+# stays, inside single quotes or $'...', in a heredoc body (quoted delimiter
+# or not -- heredoc text is prose, and joining it would put its words in
+# command position), at the end of a comment, or when the backslash is itself
+# escaped (`\\<newline>`). A plain newline still ends the line: only
+# continuations join, so an approved path on one line cannot vouch for a
+# command on another.
+#
+# Heredocs: `<<WORD`, `<<-WORD` and the quoted spellings open a body on the
+# next line, up to a line that is exactly WORD (leading tabs removed for
+# `<<-`). Several on one line are read in order. Same caveat as below: a
+# character scanner, not a parser, so `$(...)` nesting and the like are
+# approximated. One known miss: a shift inside arithmetic (`$((1<<2))`) reads
+# as a heredoc operator, and no line ever closes it, so continuations after
+# that line are not joined.
+_join_continuations() {
+  awk '
+    function flush() { print buf; buf = "" }
+    BEGIN { q = 0; hd = 0; np = 0; buf = ""; joined = 0 }
+    {
+      line = $0
+      if (hd) {
+        print line
+        chk = line
+        if (hstrip[hd]) sub(/^\t+/, "", chk)
+        if (chk == hdelim[hd]) { hd++; if (hd > np) { hd = 0; np = 0 } }
+        next
+      }
+      n = length(line); joined = 0; i = 1
+      while (i <= n) {
+        c = substr(line, i, 1)
+        if (q == 1) { buf = buf c; if (c == "\047") q = 0; i++; continue }
+        if (q == 3) {
+          if (c == "\\") { buf = buf substr(line, i, 2); i += 2; continue }
+          buf = buf c; if (c == "\047") q = 0; i++; continue
+        }
+        if (c == "\\") {
+          if (i == n) { joined = 1; i++; continue }
+          buf = buf substr(line, i, 2); i += 2; continue
+        }
+        if (q == 2) { buf = buf c; if (c == "\"") q = 0; i++; continue }
+        prev = (buf == "") ? "" : substr(buf, length(buf), 1)
+        if (c == "#" && (prev == "" || prev ~ /[[:space:];&|()<>]/)) {
+          buf = buf substr(line, i); break
+        }
+        if (c == "\047") { q = 1; buf = buf c; i++; continue }
+        if (c == "\"") { q = 2; buf = buf c; i++; continue }
+        nx = substr(line, i + 1, 1)
+        if (c == "$" && nx == "\047") { q = 3; buf = buf "$\047"; i += 2; continue }
+        if (c == "<" && nx == "<" && prev != "<" && substr(line, i + 2, 1) != "<") {
+          rest = substr(line, i + 2); strip = 0
+          if (substr(rest, 1, 1) == "-") { strip = 1; rest = substr(rest, 2) }
+          sub(/^[ \t]+/, "", rest)
+          if (match(rest, /^[^ \t;&|()<>]+/)) {
+            w = substr(rest, 1, RLENGTH)
+            gsub(/[\047"\\]/, "", w)
+            if (w != "") { np++; hdelim[np] = w; hstrip[np] = strip }
+          }
+          buf = buf "<<"; i += 2; continue
+        }
+        buf = buf c; i++
+      }
+      if (joined) next
+      flush()
+      if (q == 0 && np > 0) hd = 1
+    }
+    END { if (joined || buf != "") flush() }
+  '
+}
+
+_joined=$(printf '%s\n' "${cmd}" | _join_continuations)
+
 # `env FOO=1 git commit` puts an assignment between the wrapper and the binary,
 # which the wrapper arm does not consume. Normalize it to the bare keyword.
-_scan=$(printf '%s\n' "${cmd}" | sed -E 's/(^|[[:space:]])env[[:space:]]+([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*/\1env /g')
+_scan=$(printf '%s\n' "${_joined}" | sed -E 's/(^|[[:space:]])env[[:space:]]+([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*/\1env /g')
 
 # A leading assignment sits between the separator and the binary and defeats
 # the match. Without this pass, measured 2026-09-18, `PERSONIFY_OK=1 git
@@ -207,9 +285,10 @@ _api_is_gated() {
   printf '%s\n' "$1" | grep -qE -- "${_api_body_re}" || _gql_has_body "$1"
 }
 
-# A GraphQL query is usually written across several lines, and _segments puts
-# each line in its own segment, so the mutation and its `body:` sit on lines
-# with no `gh api` on them. Measured 2026-09-25: a two-line addComment passed.
+# A GraphQL query is usually written across several lines inside a quoted
+# string (plain newlines, not continuations, so _join_continuations leaves
+# them), and _segments puts each line in its own segment, so the mutation and
+# its `body:` sit on lines with no `gh api` on them. Measured 2026-09-25: a two-line addComment passed.
 # For a graphql segment, test the whole command (_scan_flat, set once at the
 # top) rather than the segment. Testing only the segment is the bug this
 # fixes. A match elsewhere on the line blocks too, which is the safe direction.

@@ -239,6 +239,127 @@ _case "${PERSONIFY}" "prose 'gh api -F body=' mid-sentence in echo" \
 _case "${PERSONIFY}" "prose 'gh api body' in an approved PR title" \
   "$(_b64 "gh pr create --title \"gate gh api -f body= fields\" --body-file ${APPROVED_TEXT}")" 0
 
+echo "=== personify: backslash continuation lines (claude-config#595) ==="
+# The hook splits a command into one segment per line. Before #595 it did so
+# before joining `\<newline>`, so a body flag on a continuation line sat in a
+# segment with no verb and was never checked. Each block case below returned
+# 0 on origin/main at 866377f.
+_case "${PERSONIFY}" "continued commit: approved -F, then -m on the next line" \
+  "$(_b64 "git commit -F ${APPROVED_TEXT} \\
+  -m x")" 2
+_case "${PERSONIFY}" "continued commit: -F unapproved on the next line" \
+  "$(_b64 "git commit \\
+  -F ${UNAPPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "continued gh pr create: --body on the next line" \
+  "$(_b64 'gh pr create --title t \
+  --body x')" 2
+_case "${PERSONIFY}" "continued gh pr review: --body on the next line" \
+  "$(_b64 'gh pr review 5 --comment \
+  --body x')" 2
+_case "${PERSONIFY}" "continued gh issue comment: --body on the next line" \
+  "$(_b64 'gh issue comment 5 \
+  --body x')" 2
+_case "${PERSONIFY}" "continued gh pr comment: --body on the next line" \
+  "$(_b64 'gh pr comment 5 \
+  --body x')" 2
+_case "${PERSONIFY}" "continued gh issue create: --body on the next line" \
+  "$(_b64 'gh issue create --title t \
+  --body x')" 2
+_case "${PERSONIFY}" "continued gh issue edit: --body-file unapproved on the next line" \
+  "$(_b64 "gh issue edit 5 \\
+  --body-file ${UNAPPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "continued gh pr edit: --body-file unapproved on the next line" \
+  "$(_b64 "gh pr edit 5 \\
+  --body-file ${UNAPPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "continued gh pr create: approved --body-file, then --body" \
+  "$(_b64 "gh pr create --title t --body-file ${APPROVED_TEXT} \\
+  --body x")" 2
+_case "${PERSONIFY}" "continued gh api: -f body= on the next line" \
+  "$(_b64 'gh api repos/o/r/issues/5/comments \
+  -f body=hi')" 2
+_case "${PERSONIFY}" "continued gh api over three lines" \
+  "$(_b64 'gh api repos/o/r/issues/5/comments \
+  -X POST \
+  -f body=hi')" 2
+_case "${PERSONIFY}" "continued gh api: approved -F body, then inline -f body" \
+  "$(_b64 "gh api repos/o/r/issues/5/comments -F body=@${APPROVED_TEXT} \\
+  -f body=x")" 2
+_case "${PERSONIFY}" "leading assignment on its own continued line" \
+  "$(_b64 'PERSONIFY_OK=1 \
+git commit -m x')" 2
+_case "${PERSONIFY}" "continuation splitting the verb itself" \
+  "$(_b64 'gh pr cre\
+ate --body x')" 2
+_case "${PERSONIFY}" "continuation inside double quotes joins, as bash does" \
+  "$(_b64 'bash -c "gh pr create --title t \
+  --body x"')" 2
+# The join is real, not "any backslash blocks": approved file forms split
+# across lines pass.
+_case "${PERSONIFY}" "continued commit: -F approved on the next line" \
+  "$(_b64 "git commit \\
+  -F ${APPROVED_TEXT}")" 0
+_case "${PERSONIFY}" "continued gh pr create: --body-file approved on the next line" \
+  "$(_b64 "gh pr create --title t \\
+  --body-file ${APPROVED_TEXT}")" 0
+_case "${PERSONIFY}" "continued gh api: -F body=@approved on the next line" \
+  "$(_b64 "gh api repos/o/r/issues/5/comments \\
+  -F body=@${APPROVED_TEXT}")" 0
+_case "${PERSONIFY}" "continuation right after --body-file=" \
+  "$(_b64 "gh pr create --title t --body-file=\\
+${APPROVED_TEXT}")" 0
+# Plain newlines still separate commands: an approved path on a second line
+# must not satisfy an unapproved first line.
+_case "${PERSONIFY}" "plain newline: unapproved commit, then approved commit" \
+  "$(_b64 "git commit -F ${UNAPPROVED_TEXT}
+git commit -F ${APPROVED_TEXT}")" 2
+# Verbs need command position, and quoted or heredoc prose is not joined.
+# The verb sits right after the quote on purpose: an opening quote counts as
+# command position, and the one-line form `echo 'gh pr create --title t
+# --body x'` blocks. So these two pass only because the scanner kept the
+# newline, not because the matcher missed the verb.
+_case "${PERSONIFY}" "control: one-line single-quoted verb and body blocks" \
+  "$(_b64 "echo 'gh pr create --title t --body x'")" 2
+_case "${PERSONIFY}" "prose: continuation inside single quotes is not joined" \
+  "$(_b64 "echo 'gh pr create --title t \\
+--body x'")" 0
+_case "${PERSONIFY}" "prose: continuation inside \$'...' is not joined" \
+  "$(_b64 "echo \$'gh pr create --title t \\
+--body x'")" 0
+_case "${PERSONIFY}" "here-string <<< opens no heredoc" \
+  "$(_b64 "cat <<< EOF
+gh pr create --title t \\
+  --body x")" 2
+_case "${PERSONIFY}" "prose: joined double-quoted text stays mid-sentence" \
+  "$(_b64 'echo "see gh pr create --title t \
+  --body x to do it"')" 0
+_case "${PERSONIFY}" "prose: continued lines in a quoted heredoc are not joined" \
+  "$(_b64 "cat <<'EOF' >/tmp/body.md
+gh pr create --title t \\
+  --body x
+EOF")" 0
+_case "${PERSONIFY}" "prose: continued lines in an unquoted heredoc are not joined" \
+  "$(_b64 'cat <<EOF >/tmp/body.md
+gh api repos/o/r/issues/5/comments \
+  -f body=hi
+EOF')" 0
+_case "${PERSONIFY}" "prose: <<- heredoc with a tab-indented delimiter" \
+  "$(_b64 "cat <<-EOF >/tmp/body.md
+	gh pr create --title t \\
+	  --body x
+	EOF")" 0
+_case "${PERSONIFY}" "heredoc ends, then a continued command after it still blocks" \
+  "$(_b64 "cat <<'EOF' >/tmp/body.md
+prose
+EOF
+gh pr create --title t \\
+  --body x")" 2
+_case "${PERSONIFY}" "escaped backslash at line end is not a continuation" \
+  "$(_b64 "git commit -F ${APPROVED_TEXT} \\\\
+  -m x")" 0
+_case "${PERSONIFY}" "backslash at the end of a comment is not a continuation" \
+  "$(_b64 "# run it \\
+gh pr create --title t --body x")" 2
+
 echo "=== personify: time-boxed suspension ==="
 # gate-review.sh suspended reads SUSPENDED from the fixture GATE_REVIEW_DIR.
 # The file is written straight into the fixture here, as Andrew would write
@@ -258,6 +379,9 @@ _case "${PERSONIFY}" "suspended through tomorrow: inline review body passes" \
   "$(_b64 'gh pr review 5 --comment --body "x"')" 0
 _case "${PERSONIFY}" "suspended through tomorrow: inline api body passes" \
   "$(_b64 'gh api repos/o/r/issues/5/comments -f body=hi')" 0
+_case "${PERSONIFY}" "suspended through tomorrow: continued inline PR body passes" \
+  "$(_b64 'gh pr create --title t \
+  --body x')" 0
 printf '%s\n' "$(date +%F)" >"${SUSP}"
 _case "${PERSONIFY}" "suspended through today: unapproved -F passes" \
   "$(_b64 "git commit -F ${UNAPPROVED_TEXT}")" 0
@@ -299,6 +423,9 @@ _case "${PERSONIFY}" "no SUSPENDED file: inline review body BLOCKS (control)" \
   "$(_b64 'gh pr review 5 --comment --body "x"')" 2
 _case "${PERSONIFY}" "no SUSPENDED file: inline api body BLOCKS (control)" \
   "$(_b64 'gh api repos/o/r/issues/5/comments -f body=hi')" 2
+_case "${PERSONIFY}" "no SUSPENDED file: continued inline PR body BLOCKS (control)" \
+  "$(_b64 'gh pr create --title t \
+  --body x')" 2
 
 echo "=== dir-write: writes into the lock dirs must BLOCK (exit 2) ==="
 # SUSPENDED turns the whole gate off, so an agent that can create it can
