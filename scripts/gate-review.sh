@@ -24,6 +24,7 @@
 #   gate-review.sh open                  open the batch, wait for save
 #   gate-review.sh hash <file>           print the approved-bytes hash
 #   gate-review.sh check <file>          exit 0 if file matches ANY approval
+#   gate-review.sh suspended             exit 0 if the gate is suspended today
 #
 # `check` takes no name. It hashes the input and accepts if any approved
 # artifact hashes the same, which dissolves the "which approval does this
@@ -363,10 +364,57 @@ _cmd_check() {
   return 1
 }
 
+# A real calendar date, checked in bash rather than by date(1): BSD `date -j -f`
+# rolls 2026-02-31 over to 2026-03-03 with exit 0, and GNU `date -d` parses a
+# different set of inputs. Plain arithmetic behaves the same on both.
+_valid_date() {
+  local d="$1" y m day max
+  [[ "${d}" =~ ^([0-9]{4})-([0-9]{2})-([0-9]{2})$ ]] || return 1
+  y=$((10#${BASH_REMATCH[1]}))
+  m=$((10#${BASH_REMATCH[2]}))
+  day=$((10#${BASH_REMATCH[3]}))
+  ((m >= 1 && m <= 12)) || return 1
+  case "${m}" in
+    4 | 6 | 9 | 11) max=30 ;;
+    2)
+      if ((y % 4 == 0 && (y % 100 != 0 || y % 400 == 0))); then
+        max=29
+      else
+        max=28
+      fi
+      ;;
+    *) max=31 ;;
+  esac
+  ((day >= 1 && day <= max))
+}
+
+# Time-boxed suspension of the whole gate. Andrew creates SUSPENDED by hand,
+# containing one date (YYYY-MM-DD); the gate is off through the end of that
+# local day and re-arms on its own the day after. Nothing here writes the file:
+# both write hooks (Write/Edit and the Bash chain) keep agents out of GATE_DIR.
+#
+# Fails CLOSED. A missing, empty, unreadable, malformed, impossible (02-31) or
+# past date means the gate stays armed. Only trailing whitespace is stripped,
+# so a second line of content makes the file invalid rather than ignored.
+#
+# Active suspension is never silent: it prints one line to stderr each time a
+# gated command is let through by it.
+_cmd_suspended() {
+  local file="${GATE_DIR}/SUSPENDED" content today
+  [[ -f "${file}" && -r "${file}" ]] || return 1
+  content="$(sed -e 's/[[:space:]]*$//' "${file}" 2>/dev/null)" || return 1
+  _valid_date "${content}" || return 1
+  today="$(date +%F)"
+  [[ "${content}" < "${today}" ]] && return 1
+  printf '[personify-gate] SUSPENDED until %s (%s)\n' "${content}" "${file}" >&2
+  return 0
+}
+
 case "${1:-}" in
   stage) shift; _cmd_stage "$@" ;;
   open) _cmd_open ;;
   hash) shift; _hash "$1" ;;
   check) shift; _cmd_check "$@" ;;
-  *) _die "usage: gate-review.sh {stage <name> <file>|open|hash <file>|check <file>}" ;;
+  suspended) _cmd_suspended ;;
+  *) _die "usage: gate-review.sh {stage <name> <file>|open|hash <file>|check <file>|suspended}" ;;
 esac

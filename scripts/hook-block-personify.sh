@@ -167,6 +167,15 @@ _verify_segment() {
     _deny "the bytes in ${path} do not match anything approved" "${surface}"
 }
 
+# A time-boxed suspension (gate-review.sh suspended; Andrew writes the file by
+# hand) lets every gated segment through. It is asked only once a segment is
+# actually gated, so ungated commands neither pay for the call nor print the
+# notice. A missing or non-executable gate-review.sh is not a suspension: that
+# case falls through to _verify_segment, which blocks.
+_suspended() {
+  [[ -x "${GATE}" ]] && "${GATE}" suspended
+}
+
 # `git commit --amend --no-edit` and `-C <sha>` reuse an existing message and
 # author no new text, but they name no file either, so they fall to the
 # no-message-file branch and block. That is the decided behaviour (2026-09-18):
@@ -175,11 +184,13 @@ _verify_segment() {
 while IFS= read -r seg; do
   [[ -n "${seg}" ]] || continue
   if printf '%s\n' "${seg}" | grep -qE "${commit_re}"; then
+    _suspended && exit 0
     _verify_segment "${seg}" "commit message" '-m|--message' '-F|--file'
   elif printf '%s\n' "${seg}" | grep -qE "${gh_re}"; then
     # Titles and labels carry no body text. Gate only when a body flag is
     # present, per the locked decision that PR titles stay ungated.
     if printf '%s\n' "${seg}" | grep -qE '[[:space:]](-b|--body|-F|--body-file)([[:space:]]|=)'; then
+      _suspended && exit 0
       _verify_segment "${seg}" "PR/issue body" '-b|--body' '-F|--body-file'
     fi
   fi
