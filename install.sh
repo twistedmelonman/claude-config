@@ -229,6 +229,13 @@ _ensure_symlink() {
 # 4. REPAIR MODE
 # ============================================================================
 
+# Counts read by the --repair health verdict below (#439). --repair used to say
+# "All symlinks healthy" while a tracked file had no link at all, and before
+# the prune step had even looked for stale ones.
+REPAIR_COUNT=0
+MISSING_COUNT=0
+PRUNE_COUNT=0
+
 repair_symlinks() {
   local repair_count=0
 
@@ -240,6 +247,19 @@ repair_symlinks() {
 
     local link="${DEPLOY_DIR}/${file}"
     local target="${REPO_DIR}/${file}"
+
+    # A tracked file with no link at all. --repair does not create links
+    # (--sync does), but it must not call this state healthy: a missing hook
+    # link silently disables that hook (hook-block-all.sh skips a hook that
+    # is not executable). --sync creates these in its main loop, so only
+    # --repair reports them.
+    if [[ ! -e "${link}" && ! -L "${link}" ]]; then
+      if ${REPAIR_ONLY}; then
+        _warn "Missing symlink: ${link} (tracked file has no link; run install.sh --sync)"
+        ((MISSING_COUNT += 1))
+      fi
+      continue
+    fi
 
     # Only repair files that exist as regular files where symlinks should be
     if [[ -f "${link}" && ! -L "${link}" ]]; then
@@ -264,9 +284,8 @@ repair_symlinks() {
     fi
   done
 
-  if [[ "${repair_count}" -eq 0 ]]; then
-    _ok "All symlinks healthy — nothing to repair"
-  else
+  REPAIR_COUNT="${repair_count}"
+  if [[ "${repair_count}" -gt 0 ]]; then
     _ok "Repaired ${repair_count} symlink(s)"
   fi
 }
@@ -298,10 +317,12 @@ prune_stale_symlinks() {
     if [[ "${DRY_RUN}" == true ]]; then
       _dry "Would remove stale symlink: ${link} -> ${target}"
       would_install+=("prune:${link}")
+      ((PRUNE_COUNT += 1))
       continue
     fi
     if rm "${link}"; then
       _ok "Removed stale symlink: ${link} -> ${target}"
+      ((PRUNE_COUNT += 1))
       installed+=("pruned:${link}")
       prune_dirs+=("$(dirname "${link}")")
     else
@@ -327,6 +348,21 @@ prune_stale_symlinks() {
 if ${REPAIR_ONLY}; then
   repair_symlinks
   prune_stale_symlinks
+  # The verdict comes last, after every check has run, and says "healthy"
+  # only when none of them found anything (#439). Exit status stays 0:
+  # update-tools.sh runs --repair under set -e, and a missing link is a
+  # warning to act on, not a reason to abort the nightly update.
+  if [[ ${#failures[@]} -gt 0 ]]; then
+    _warn "NOT healthy: ${#failures[@]} step(s) failed (see errors above)"
+  elif [[ "${MISSING_COUNT}" -gt 0 ]]; then
+    _warn "NOT healthy: ${MISSING_COUNT} tracked file(s) have no symlink. --repair does not create links; run install.sh --sync"
+  elif [[ "${REPAIR_COUNT}" -eq 0 && "${PRUNE_COUNT}" -eq 0 ]]; then
+    _ok "All symlinks healthy — nothing to repair"
+  elif [[ "${DRY_RUN}" == true ]]; then
+    _dry "Repair would fix ${REPAIR_COUNT} link(s) and prune ${PRUNE_COUNT} stale link(s)"
+  else
+    _ok "Repair complete: ${REPAIR_COUNT} repaired, ${PRUNE_COUNT} stale link(s) pruned"
+  fi
   exit 0
 fi
 
