@@ -12,18 +12,29 @@
 # agent from running `merge-lock.sh authorize` matches the subcommand in
 # argument position 1; a global flag before it would slip past that regex.
 #
-# authorize takes a comma-separated list whose entries are either bare PR
-# numbers, resolved against --repo or the cwd, or repo-qualified tokens:
+# authorize takes a comma-separated list whose entries accept any standard PR
+# notation (issue #562): a bare number, resolved against --repo or the cwd; a
+# leading-# number, same thing; a bare repo name before '#', which borrows its
+# owner from --repo or the cwd; a full owner/repo#N pair; or a
+# github.com/owner/repo/pull/N URL.
 #
 #   merge-lock.sh authorize 92,93 "wave 3" --repo owner/repo
 #   merge-lock.sh authorize owner/a#92,owner/b#7 "wave 3"
+#   merge-lock.sh authorize https://github.com/owner/a/pull/92 "wave 3"
 #
-# The qualified form exists so one human command can authorize a fleet-wide
-# change; a 26-repo wave otherwise needs 26 invocations. It grants the same
-# 30-minute lock per PR and changes no part of the trust model: the hook
-# above still blocks the agent from running authorize at all, and every lock
-# stays keyed to its own repo. Note that all locks in one batch share a
-# timestamp, so 50 of them expire together when the window elapses.
+# The qualified forms (owner/repo#N, a URL) exist so one human command can
+# authorize a fleet-wide change; a 26-repo wave otherwise needs 26
+# invocations, and they carry their own repo, so they work even when the cwd
+# is not a git checkout at all — the repo is resolved from the cwd only when
+# some entry in the list actually needs it. It grants the same 30-minute lock
+# per PR and changes no part of the trust model: the hook above still blocks
+# the agent from running authorize at all, and every lock stays keyed to its
+# own repo. Note that all locks in one batch share a timestamp, so 50 of them
+# expire together when the window elapses.
+#
+# When a bare number does not exist in the resolved repo, authorize searches
+# sibling repos under the same owner and suggests a match rather than failing
+# blind — it never authorizes the suggestion itself, only prints it.
 #
 # Lock lifetime defaults to 30 minutes and is set per batch with --ttl, in
 # minutes, up to 8 hours (issue #501):
@@ -100,6 +111,73 @@ resolve_repo() {
   fi
 }
 
+# True (exit 0) when a raw authorize-list token needs REPO (from --repo or
+# the cwd) to resolve. False (exit 1) for a token that names its own repo and
+# so must work from any directory, including one that is not a checkout at
+# all (issue #562): a full owner/repo#N pair or a github.com PR URL.
+#
+# Bare "N", "#N", and the short "name#N" form (repo name with no owner) all
+# need REPO — the first two entirely, the third for its owner segment.
+entry_needs_repo() {
+  local e="$1"
+  if [[ "${e}" =~ ^https?://github\.com/[^/[:space:]]+/[^/[:space:]]+/pull/[0-9]+/?$ ]]; then
+    return 1
+  fi
+  if [[ "${e}" != *"#"* ]]; then
+    return 0
+  fi
+  local repo_part="${e%%#*}"
+  [[ "${repo_part}" == */* ]] && return 1
+  return 0
+}
+
+# Normalize one authorize-list token into $_entry_repo / $_entry_pr. Accepts:
+#   N            - bare number, resolved against REPO
+#   #N           - same as N
+#   name#N       - repo name only; owner comes from REPO
+#   owner/name#N - fully qualified, works from anywhere
+#   https://github.com/owner/name/pull/N - same, rewritten to owner/name#N
+#
+# REPO must already hold whatever entry_needs_repo said this token needs;
+# the authorize dispatch resolves it (or doesn't) before this ever runs.
+normalize_pr_entry() {
+  local entry="$1"
+  _entry_repo=""
+  _entry_pr=""
+
+  if [[ "${entry}" =~ ^https?://github\.com/([^/[:space:]]+/[^/[:space:]]+)/pull/([0-9]+)/?$ ]]; then
+    entry="${BASH_REMATCH[1]}#${BASH_REMATCH[2]}"
+  fi
+
+  if [[ "${entry}" == "#"* ]]; then
+    entry="${entry#\#}"
+  fi
+
+  if [[ "${entry}" == *"#"* ]]; then
+    _entry_repo="${entry%%#*}"
+    _entry_pr="${entry#*#}"
+    if [[ -z "${_entry_repo}" ]]; then
+      echo "Error: missing repo before '#' in: ${1}" >&2
+      exit 1
+    fi
+    if [[ "${_entry_repo}" != */* ]]; then
+      # Short form: repo name only. Owner comes from REPO (--repo or cwd).
+      if [[ -z "${REPO:-}" ]]; then
+        echo "Error: '${_entry_repo}#${_entry_pr}' has no owner, and no repo could be resolved from --repo or the current directory." >&2
+        exit 1
+      fi
+      _entry_repo="${REPO%%/*}/${_entry_repo}"
+    fi
+    if ! validate_repo_slug "${_entry_repo}"; then
+      echo "Error: invalid repo '${_entry_repo}' in '${1}' (expected OWNER/NAME)" >&2
+      exit 1
+    fi
+  else
+    _entry_repo="${REPO}"
+    _entry_pr="${entry}"
+  fi
+}
+
 # Explain where a repo slug came from, for error messages. The cwd case names
 # the directory: it is the input the human did not realize they were giving.
 repo_origin_note() {
@@ -140,6 +218,51 @@ pr_exists() {
   # The repo resolved a moment ago, so the API is reachable and this is a
   # genuine "no such PR" rather than an outage.
   return 1
+}
+
+# Cap on how many of the owner's repos suggest_other_repo_matches probes.
+# Each candidate costs one `gh pr view` call, so this bounds a miss on a
+# large org to a bounded number of API calls rather than one per repo.
+SUGGEST_REPO_LIMIT=50
+
+# A bare PR number that does not exist in the resolved repo may still exist
+# in a sibling repo under the same owner (issue #562): "I still want to be
+# able to type 'merge-lock auth 123'" even when the PR is in repo B and the
+# cwd (or --repo) named repo A. This only ever prints a suggestion — it never
+# authorizes anything itself, so it cannot be used to grant a lock the human
+# did not name.
+#
+# Prints nothing and returns 1 when the owner has no other repo with a
+# matching PR number, or when the search itself could not run (no gh, no
+# network, no matches) — all of which are "say nothing" cases, not errors.
+suggest_other_repo_matches() {
+  local pr="$1" exclude_repo="$2"
+  local owner="${exclude_repo%%/*}"
+
+  local repos
+  repos=$(gh repo list "${owner}" --limit "${SUGGEST_REPO_LIMIT}" \
+    --json name -q '.[].name' 2>/dev/null) || return 1
+  [[ -n "${repos}" ]] || return 1
+
+  local name candidate
+  local _matches=()
+  while IFS= read -r name; do
+    [[ -z "${name}" ]] && continue
+    candidate="${owner}/${name}"
+    [[ "${candidate}" == "${exclude_repo}" ]] && continue
+    if gh pr view "${pr}" --repo "${candidate}" --json number >/dev/null 2>&1; then
+      _matches+=("${candidate}")
+    fi
+  done <<<"${repos}"
+
+  [[ "${#_matches[@]}" -eq 0 ]] && return 1
+
+  echo "Did you mean one of these?" >&2
+  local f
+  for f in "${_matches[@]}"; do
+    echo "  ${f}#${pr}" >&2
+  done
+  return 0
 }
 
 # Optional 2nd argument overrides the repo, for callers handling several in
@@ -467,6 +590,11 @@ authorize_batch() {
   IFS=',' read -r -a _pr_raw <<<"${pr_arg}"
   local _pr_list=()
   local _repo_list=()
+  # Parallel to the two above: "true" when the token carried no repo of its
+  # own (bare N or #N) and so leaned entirely on REPO. Only these are
+  # candidates for the other-repos suggestion below — a token that named its
+  # own repo (owner/name#N, name#N, or a URL) already got what it asked for.
+  local _bare_list=()
   local _entry
   for _entry in "${_pr_raw[@]}"; do
     # Trim leading/trailing whitespace.
@@ -477,27 +605,16 @@ authorize_batch() {
       exit 1
     fi
 
-    local _entry_repo _entry_pr
-    if [[ "${_entry}" == *"#"* ]]; then
-      _entry_repo="${_entry%%#*}"
-      _entry_pr="${_entry#*#}"
-      # A second '#' would leave a non-numeric remainder; the PR check below
-      # rejects it, so no separate arm is needed here.
-      if [[ -z "${_entry_repo}" ]]; then
-        echo "Error: missing repo before '#' in: ${_entry}" >&2
-        exit 1
+    local _was_bare=false
+    if [[ ! "${_entry}" =~ ^https?://github\.com/ ]]; then
+      if [[ "${_entry}" != *"#"* ]]; then
+        _was_bare=true
+      elif [[ "${_entry}" == "#"* ]]; then
+        _was_bare=true
       fi
-      # Reuse the slug validator that guards cwd/--repo resolution: the slug
-      # becomes two path segments of the lock path, so a traversing or
-      # slash-bearing slug must never reach lock_path.
-      if ! validate_repo_slug "${_entry_repo}"; then
-        echo "Error: invalid repo '${_entry_repo}' in '${_entry}' (expected OWNER/NAME)" >&2
-        exit 1
-      fi
-    else
-      _entry_repo="${REPO}"
-      _entry_pr="${_entry}"
     fi
+
+    normalize_pr_entry "${_entry}"
 
     if [[ ! "${_entry_pr}" =~ ^[0-9]+$ ]] || [[ "${_entry_pr}" -le 0 ]]; then
       echo "Error: invalid PR number: ${_entry}" >&2
@@ -505,6 +622,7 @@ authorize_batch() {
     fi
     _pr_list+=("${_entry_pr}")
     _repo_list+=("${_entry_repo}")
+    _bare_list+=("${_was_bare}")
   done
 
   # Confirm every pair exists before writing any lock (issue #471).
@@ -533,6 +651,9 @@ authorize_batch() {
         echo "${_origin}" >&2
         echo "If the PR is in another repo, pass --repo OWNER/NAME after the subcommand," >&2
         echo "or name it inline as OWNER/NAME#${_check_pr}." >&2
+        if [[ "${_bare_list[${_i}]}" == true ]]; then
+          suggest_other_repo_matches "${_check_pr}" "${_check_repo}" || true
+        fi
         exit 1
         ;;
       *)
@@ -677,17 +798,45 @@ case "${SUBCOMMAND}" in
   authorize | auth)
     if [[ -z "${POSITIONAL[0]:-}" ]]; then
       echo "Usage: $0 authorize <pr[,pr...]> <reason> [--repo OWNER/NAME] [--ttl MINUTES]" >&2
-      echo "       each pr is N (uses --repo/cwd) or OWNER/NAME#N" >&2
+      echo "       each pr is N, #N, NAME#N (owner from --repo/cwd), OWNER/NAME#N," >&2
+      echo "       or a https://github.com/OWNER/NAME/pull/N URL" >&2
       exit 1
     fi
     if [[ -z "${POSITIONAL[1]:-}" ]]; then
       echo "Error: reason is required" >&2
       echo "Usage: $0 authorize <pr[,pr...]> <reason> [--repo OWNER/NAME] [--ttl MINUTES]" >&2
-      echo "       each pr is N (uses --repo/cwd) or OWNER/NAME#N" >&2
+      echo "       each pr is N, #N, NAME#N (owner from --repo/cwd), OWNER/NAME#N," >&2
+      echo "       or a https://github.com/OWNER/NAME/pull/N URL" >&2
       exit 1
     fi
 
-    resolve_repo "${REPO_OVERRIDE}"
+    # Resolve REPO from the cwd only when the list actually needs it (issue
+    # #562: a fully repo-qualified list, e.g. from a script authorizing PRs
+    # by URL, must work from any directory, including one that is not a git
+    # checkout at all — `gh repo view` there would exit before
+    # authorize_batch ever looked at the tokens). An explicit --repo always
+    # resolves normally: it never probes the cwd, so there is nothing to
+    # skip.
+    if [[ -n "${REPO_OVERRIDE}" ]]; then
+      resolve_repo "${REPO_OVERRIDE}"
+    else
+      _auth_needs_repo=false
+      IFS=',' read -r -a _auth_scan <<<"${POSITIONAL[0]}"
+      for _auth_tok in "${_auth_scan[@]}"; do
+        _auth_tok="${_auth_tok#"${_auth_tok%%[![:space:]]*}"}"
+        _auth_tok="${_auth_tok%"${_auth_tok##*[![:space:]]}"}"
+        if entry_needs_repo "${_auth_tok}"; then
+          _auth_needs_repo=true
+          break
+        fi
+      done
+      if [[ "${_auth_needs_repo}" == true ]]; then
+        resolve_repo ""
+      else
+        REPO=""
+        REPO_SOURCE=""
+      fi
+    fi
     TTL_SECONDS_RESOLVED=$(resolve_ttl "${TTL_OVERRIDE}")
     authorize_batch "${POSITIONAL[0]}" "${POSITIONAL[1]}" "${TTL_SECONDS_RESOLVED}"
     ;;
@@ -763,5 +912,10 @@ case "${SUBCOMMAND}" in
     echo ""
     echo "Locks are keyed on repo + PR number. The repo comes from --repo OWNER/NAME"
     echo "(after the subcommand) or from 'gh repo view' in the current directory."
+    echo ""
+    echo "authorize accepts any of these per PR: N, #N, NAME#N (owner from"
+    echo "--repo/cwd), OWNER/NAME#N, or a full github.com/OWNER/NAME/pull/N URL."
+    echo "A fully qualified list (OWNER/NAME#N or a URL) needs no --repo and works"
+    echo "from any directory, even one that is not a git checkout."
     ;;
 esac
