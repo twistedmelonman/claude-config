@@ -212,6 +212,25 @@ _case "${PERSONIFY}" "api graphql query READING comment bodies" \
   "$(_b64 "gh api graphql -f query='{ repository(owner:\"o\",name:\"r\") { issue(number:5) { comments(first:5) { nodes { body } } } } }'")" 0
 _case "${PERSONIFY}" "api graphql addComment mutation with inline body" \
   "$(_b64 "gh api graphql -f query='mutation { addComment(input: {subjectId: \"X\", body: \"hi\"}) { clientMutationId } }'")" 2
+# The usual way to write a mutation puts the query on its own lines. The hook
+# splits a command into per-line segments, so the mutation and `body:` sit on
+# lines that carry no `gh api`. Verified 2026-09-25: these returned 0.
+_case "${PERSONIFY}" "api graphql mutation on the line after gh api" \
+  "$(_b64 "gh api graphql -f query='
+mutation { addComment(input: {subjectId: \"X\", body: \"hi\"}) { clientMutationId } }'")" 2
+_case "${PERSONIFY}" "api graphql mutation spread across lines" \
+  "$(_b64 "gh api graphql -f query='
+mutation {
+  addComment(input: {
+    subjectId: \"X\"
+    body: \"hi\"
+  }) { clientMutationId }
+}'")" 2
+_case "${PERSONIFY}" "multi-line read-only graphql query selecting body" \
+  "$(_b64 "gh api graphql -f query='
+{ repository(owner: \"o\", name: \"r\") {
+    issue(number: 5) { comments(first: 5) { nodes { body } } }
+} }'")" 0
 _case "${PERSONIFY}" "api graphql mutation with body from a variable" \
   "$(_b64 "gh api graphql -f query='mutation(\$b: String!) { addComment(input: {subjectId: \"X\", body: \$b}) { clientMutationId } }' -f b=hi")" 2
 # Verbs need command position: the words inside prose must not gate.

@@ -88,6 +88,11 @@ _scan=$(printf '%s\n' "${cmd}" | sed -E 's/(^|[[:space:]])env[[:space:]]+([A-Za-
 # typing its own name. Re-run that case against any matcher change.
 _scan=$(printf '%s\n' "${_scan}" | sed -E 's/(^|&&|\|\||;|\||&|\(|\{)[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)+/\1 /g')
 
+# The whole command on one line, for checks that must see past the per-line
+# segments _segments produces (see _gql_has_body).
+_scan_flat=$(printf '%s\n' "${_scan}" | tr '\n' ' ')
+readonly _scan_flat
+
 commit_re="${_sep}${_wrap}${_path}git[[:space:]]+(-[^[:space:]]+[[:space:]]+${_optval})*commit([[:space:]]|$)"
 gh_re="${_sep}${_wrap}${_path}gh[[:space:]]+(-[^[:space:]]+[[:space:]]+${_optval})*(pr[[:space:]]+(create|comment|edit|review)|issue[[:space:]]+(create|comment|edit))([[:space:]]|$)"
 api_re="${_sep}${_wrap}${_path}gh[[:space:]]+(-[^[:space:]]+[[:space:]]+${_optval})*api([[:space:]]|$)"
@@ -199,8 +204,18 @@ _verify_path() {
 # with a body argument. Anything else (GETs, state/label/title fields, read-only
 # queries) is not a text surface.
 _api_is_gated() {
-  printf '%s\n' "$1" | grep -qE -- "${_api_body_re}" ||
-    printf '%s\n' "$1" | grep -qE -- "${_gql_body_re}"
+  printf '%s\n' "$1" | grep -qE -- "${_api_body_re}" || _gql_has_body "$1"
+}
+
+# A GraphQL query is usually written across several lines, and _segments puts
+# each line in its own segment, so the mutation and its `body:` sit on lines
+# with no `gh api` on them. Measured 2026-09-25: a two-line addComment passed.
+# For a graphql segment, test the whole command (_scan_flat, set once at the
+# top) rather than the segment. Testing only the segment is the bug this
+# fixes. A match elsewhere on the line blocks too, which is the safe direction.
+_gql_has_body() {
+  printf '%s\n' "$1" | grep -qE 'graphql' || return 1
+  printf '%s\n' "${_scan_flat}" | grep -qE -- "${_gql_body_re}"
 }
 
 # Verify every body field in one `gh api` segment. Only `-F/--field body=@<abs>`
@@ -209,7 +224,7 @@ _api_is_gated() {
 # posts the literal string and is inline text like any other value.
 _verify_api_segment() {
   local seg="$1" surface="API body" m flag val matches
-  if printf '%s\n' "${seg}" | grep -qE -- "${_gql_body_re}"; then
+  if _gql_has_body "${seg}"; then
     _deny "GraphQL mutation carries its body inline; use gh pr/issue comment --body-file" "${surface}"
   fi
   matches="$(printf '%s\n' "${seg}" | grep -oE -- "${_api_body_re}" || true)"
