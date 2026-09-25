@@ -1585,6 +1585,12 @@ show_large_diff_summary() {
   echo "" >&2
 }
 
+# True when the adversarial-reviewer agent is installed. Shared by the
+# chunked path and the whole-diff path so the two cannot disagree about it.
+_adversarial_reviewer_installed() {
+  find -L "${HOME}/.claude/plugins/marketplaces" -name "adversarial-reviewer.md" -type f 2>/dev/null | grep -q .
+}
+
 perform_chunked_review() {
   local total_lines="$1"
 
@@ -1648,6 +1654,52 @@ ${commit_msg}
 "
   else
     commit_msg_section=""
+  fi
+
+  # adversarial-reviewer: ONE pass over the whole diff, in parallel with the
+  # per-file code-reviewer passes. Issue #558: this path used to call only
+  # code-reviewer, so a chunked commit never got adversarial review and the
+  # log gave no sign of it. Its value is cross-file reasoning, which per-file
+  # chunks cannot give, so it is not chunked. The diff here is at most
+  # review.skipThreshold lines — what full-diff mode already hands it.
+  #
+  # Its output file lives in a subdirectory of _chunk_results. Per-file result
+  # names have every `/` replaced, so no repo path can collide with it.
+  local adv_available=false adv_out_file=""
+  if _adversarial_reviewer_installed; then
+    adv_available=true
+    mkdir -p "${_chunk_results}/meta"
+    adv_out_file="${_chunk_results}/meta/adversarial.out"
+    local adv_prompt
+    adv_prompt="${commit_msg_section}You are performing a pre-commit code review of the WHOLE diff below. It is large, so a second reviewer is also reading it file by file; your job is the cross-file view: how the changes interact, what one file assumes about another, and what fails when they meet.
+
+IMPORTANT: You are being invoked as a focused analysis tool with --no-session-persistence.
+Do NOT output Protocol 0 environment check or any preamble.
+Begin your response directly with the verdict in the specified format below.
+
+${REVIEW_SEVERITY_RULES}
+
+CRITICAL: Respond with this exact format:
+
+VERDICT: [PASS or FAIL]
+
+[If FAIL, list each issue:]
+ISSUE: [one-line description]
+SEVERITY: [BLOCKING, FIX_NOW, or WARNING]
+LOCATION: [file:line]
+DETAILS: [explanation and fix]
+
+Review this diff:
+
+\`\`\`diff
+${DIFF}
+\`\`\`"
+    (
+      _aout=$(invoke_agent "adversarial-reviewer" "${adv_prompt}" "${CACHE_DIR}/adversarial-chunked-${DIFF_HASH}" "${ADVERSARIAL_MODEL_ARGS[@]}") || true
+      printf '%s\n' "${_aout}" >"${adv_out_file}"
+    ) &
+  else
+    log_warn "adversarial-reviewer agent not found - chunked review runs code-reviewer only (see ~/.claude/docs/CUSTOM_AGENTS.md)"
   fi
 
   # Dispatch phase: build per-file prompt, spawn background invoke_agent.
@@ -1811,6 +1863,32 @@ $(strip_structured_blocking "${_rout}")"
     ((reviewed_files += 1))
   done <<<"${files}"
 
+  # Read adversarial-reviewer's result (the `wait` above covered its job).
+  # Same normalisation, downgrade and gate as the whole-diff path, so the
+  # two paths reach the same decision on the same output.
+  local adv_verdict="N/A" adv_status="" adv_output="" adv_display=""
+  if [[ "${adv_available}" == true ]]; then
+    adv_output=$(cat "${adv_out_file}" 2>/dev/null || true)
+    [[ -n "${adv_output//[[:space:]]/}" ]] || adv_output="VERDICT: FAIL (agent error: invoke_agent produced no output)"
+    adv_output=$(downgrade_version_unfamiliarity_findings "${adv_output}")
+    adv_display=$(strip_structured_blocking "${adv_output}")
+    adv_verdict=$(parse_verdict "${adv_output}")
+    if [[ "${adv_verdict}" == "REVISE" ]]; then
+      adv_verdict="FAIL"
+    fi
+    if [[ "${adv_verdict}" != "PASS" && "${adv_verdict}" != "FAIL" ]]; then
+      adv_status="unparseable"
+    elif [[ "${adv_verdict}" == "FAIL" ]] && grep -qE "VERDICT: (FAIL|Revise) \((timeout|agent error)" <<<"${adv_display}"; then
+      adv_status="transient"
+    elif [[ "${adv_verdict}" == "FAIL" ]] && output_blocks "${adv_output}"; then
+      adv_status="blocking"
+    elif [[ "${adv_verdict}" == "FAIL" ]]; then
+      adv_status="warnings"
+    else
+      adv_status="pass"
+    fi
+  fi
+
   rm -rf "${_chunk_results}"
   unset _chunk_results _chunk_pids
 
@@ -1830,7 +1908,18 @@ $(strip_structured_blocking "${_rout}")"
   fi
   echo "Blocking issues: ${blocking_count}" >&2
   echo "Warnings: ${warning_count}" >&2
+  case "${adv_status}" in
+    "") echo "adversarial-reviewer: NOT RUN (agent not installed)" >&2 ;;
+    transient) echo "adversarial-reviewer: NOT COMPLETED (timeout or agent error)" >&2 ;;
+    *) echo "adversarial-reviewer: ${adv_verdict} (whole diff)" >&2 ;;
+  esac
   echo "" >&2
+
+  if [[ -n "${adv_display}" ]]; then
+    echo "=== ADVERSARIAL REVIEWER (whole diff) ===" >&2
+    echo "${adv_display}" >&2
+    echo "" >&2
+  fi
 
   # Write results to REVIEW_LOG (global; || true guards set -e)
   {
@@ -1844,6 +1933,23 @@ $(strip_structured_blocking "${_rout}")"
     if [[ -n "${issues_output}" ]]; then
       printf '%s\n' "${issues_output}"
     fi
+    if [[ -n "${adv_display}" ]]; then
+      printf '=== ADVERSARIAL REVIEWER (whole diff) ===\n%s\n' "${adv_display}"
+    fi
+    # Same verdict lines as the whole-diff path, so the Protocol 4 log check
+    # reads a chunked commit the same way. A reviewer that did not run says
+    # so here rather than leaving the line out.
+    if [[ "${overall_verdict}" == "FAIL" ]]; then
+      printf 'code-reviewer: FAIL\n'
+    else
+      printf 'code-reviewer: PASS (%d/%d files)\n' "${reviewed_files}" "${file_count}"
+    fi
+    case "${adv_status}" in
+      "") printf 'adversarial-reviewer: skipped (agent not installed)\n' ;;
+      transient) printf 'adversarial-reviewer: skipped (timeout or agent error)\n' ;;
+      unparseable) printf 'adversarial-reviewer: FAIL (unparseable)\n' ;;
+      *) printf 'adversarial-reviewer: %s\n' "${adv_verdict}" ;;
+    esac
   } >>"${REVIEW_LOG}" || true
 
   if [[ "${overall_verdict}" == "FAIL" ]]; then
@@ -1853,6 +1959,15 @@ $(strip_structured_blocking "${_rout}")"
     echo "   git config review.maxLines 2500  # review whole diff at once" >&2
     echo "   git commit                        # retry" >&2
     echo "   git config --unset review.maxLines" >&2
+    return 1
+  elif [[ "${adv_status}" == "blocking" ]]; then
+    log_error "adversarial-reviewer found issues - commit rejected"
+    log_error "Note: the per-file code-reviewer passes did not block; adversarial-reviewer read the whole diff"
+    return 1
+  elif [[ "${adv_status}" == "unparseable" ]]; then
+    log_error "Could not parse adversarial-reviewer verdict"
+    describe_unparseable_verdict "${adv_output}"
+    log_error "BLOCKING: Cannot verify adversarial review result"
     return 1
   elif [[ ${skipped_files} -gt 0 ]]; then
     # Fail-closed on ANY unreviewed file, not only when all were skipped.
@@ -1880,7 +1995,25 @@ $(strip_structured_blocking "${_rout}")"
     echo "   Review manually: git diff --cached | claude --agent code-reviewer -p --tools \"\"" >&2
     return 1
   else
-    log_success "Chunked review passed (${reviewed_files} files reviewed)"
+    case "${adv_status}" in
+      "")
+        log_warn "adversarial-reviewer did NOT run on this commit (agent not installed)"
+        log_success "Chunked review passed (${reviewed_files} files reviewed; code-reviewer only)"
+        ;;
+      transient)
+        # Non-blocking, as on the whole-diff path, but never silent.
+        log_warn "adversarial-reviewer timed out or errored - it did NOT review this commit (non-blocking)"
+        log_warn "  Re-run: git config review.timeout 300, then retry the commit"
+        log_success "Chunked review passed (${reviewed_files} files reviewed; code-reviewer only)"
+        ;;
+      warnings)
+        log_warn "adversarial-reviewer found warnings (non-blocking)"
+        log_success "Chunked review passed (${reviewed_files} files reviewed; code-reviewer + adversarial-reviewer)"
+        ;;
+      *)
+        log_success "Chunked review passed (${reviewed_files} files reviewed; code-reviewer + adversarial-reviewer)"
+        ;;
+    esac
     return 0
   fi
 }
@@ -2669,7 +2802,7 @@ fi
 ADVERSARIAL_OUTPUT=""
 ADVERSARIAL_VERDICT="N/A"
 ADVERSARIAL_AVAILABLE=true
-if ! find -L "${HOME}/.claude/plugins/marketplaces" -name "adversarial-reviewer.md" -type f 2>/dev/null | grep -q .; then
+if ! _adversarial_reviewer_installed; then
   log_warn "adversarial-reviewer agent not found - skipping (see ~/.claude/docs/CUSTOM_AGENTS.md for setup)"
   ADVERSARIAL_AVAILABLE=false
 fi
