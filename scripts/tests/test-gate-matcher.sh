@@ -130,7 +130,78 @@ _case "${PERSONIFY}" "approved then unapproved" \
 _case "${PERSONIFY}" "approved then approved" \
   "$(_b64 "git commit -F ${APPROVED_TEXT} && gh pr create --body-file ${APPROVED_TEXT}")" 0
 
+echo "=== personify: time-boxed suspension ==="
+# gate-review.sh suspended reads SUSPENDED from the fixture GATE_REVIEW_DIR.
+# The file is written straight into the fixture here, as Andrew would write
+# the real one by hand; nothing in the tool writes it.
+SUSP="${GATE_REVIEW_DIR}/SUSPENDED"
+_day() {
+  date -v"$1"d +%F 2>/dev/null || date -d "$1 days" +%F
+}
+printf '%s\n' "$(_day +1)" >"${SUSP}"
+_case "${PERSONIFY}" "suspended through tomorrow: inline -m passes" \
+  "$(_b64 'git commit -m "x"')" 0
+_case "${PERSONIFY}" "suspended through tomorrow: unapproved -F passes" \
+  "$(_b64 "git commit -F ${UNAPPROVED_TEXT}")" 0
+_case "${PERSONIFY}" "suspended through tomorrow: inline PR body passes" \
+  "$(_b64 'gh pr create --body "x"')" 0
+printf '%s\n' "$(date +%F)" >"${SUSP}"
+_case "${PERSONIFY}" "suspended through today: unapproved -F passes" \
+  "$(_b64 "git commit -F ${UNAPPROVED_TEXT}")" 0
+# The notice is printed only when suspension is what let a gated command
+# through, so ungated commands stay quiet.
+_notice_err="$(printf '{"tool_input":{"command":"ls"}}' | "${PERSONIFY}" 2>&1 >/dev/null)"
+if [[ -z "${_notice_err}" ]]; then
+  echo "  PASS ungated command prints no suspension notice"
+  pass=$((pass + 1))
+else
+  echo "  FAIL ungated command prints no suspension notice (got: ${_notice_err})"
+  fail=$((fail + 1))
+fi
+_notice_err="$(printf '{"tool_input":{"command":%s}}' "$(printf '%s' 'git commit -m x' | jq -Rs .)" |
+  "${PERSONIFY}" 2>&1 >/dev/null)"
+if [[ "${_notice_err}" == *"[personify-gate] SUSPENDED until"* ]]; then
+  echo "  PASS a suspended gated command prints the notice"
+  pass=$((pass + 1))
+else
+  echo "  FAIL a suspended gated command prints the notice (got: ${_notice_err})"
+  fail=$((fail + 1))
+fi
+printf '%s\n' "$(_day -1)" >"${SUSP}"
+_case "${PERSONIFY}" "expired yesterday: inline -m BLOCKS" \
+  "$(_b64 'git commit -m "x"')" 2
+_case "${PERSONIFY}" "expired yesterday: unapproved -F BLOCKS" \
+  "$(_b64 "git commit -F ${UNAPPROVED_TEXT}")" 2
+printf '2099-02-31\n' >"${SUSP}"
+_case "${PERSONIFY}" "impossible date: unapproved -F BLOCKS" \
+  "$(_b64 "git commit -F ${UNAPPROVED_TEXT}")" 2
+# Known-bad control: with no SUSPENDED file the gate is armed again, so the
+# cases above that passed must block. Proves no state leaked out of them.
+rm -f "${SUSP}"
+_case "${PERSONIFY}" "no SUSPENDED file: unapproved -F BLOCKS (control)" \
+  "$(_b64 "git commit -F ${UNAPPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "no SUSPENDED file: inline PR body BLOCKS (control)" \
+  "$(_b64 'gh pr create --body "x"')" 2
+
 echo "=== dir-write: writes into the lock dirs must BLOCK (exit 2) ==="
+# SUSPENDED turns the whole gate off, so an agent that can create it can
+# approve everything. It sits in gate-review/ and gets no rule of its own.
+_case "${DIRWRITE}" "redirect creating SUSPENDED" \
+  "$(_b64 "echo 2099-12-31 > ${HOME}/.claude/gate-review/SUSPENDED")" 2
+_case "${DIRWRITE}" "tilde-spelled redirect creating SUSPENDED" \
+  "$(_b64 'echo 2099-12-31 > ~/.claude/gate-review/SUSPENDED')" 2
+_case "${DIRWRITE}" "noclobber-override redirect creating SUSPENDED" \
+  "$(_b64 "echo 2099-12-31 >| ${HOME}/.claude/gate-review/SUSPENDED")" 2
+_case "${DIRWRITE}" "noclobber-override redirect into merge-locks" \
+  "$(_b64 'echo x >| ~/.claude/merge-locks/fake')" 2
+_case "${DIRWRITE}" "touch SUSPENDED" \
+  "$(_b64 "touch ${HOME}/.claude/gate-review/SUSPENDED")" 2
+_case "${DIRWRITE}" "tee SUSPENDED" \
+  "$(_b64 "echo 2099-12-31 | tee ${HOME}/.claude/gate-review/SUSPENDED")" 2
+_case "${DIRWRITE}" "cp into SUSPENDED" \
+  "$(_b64 "cp /tmp/x ${HOME}/.claude/gate-review/SUSPENDED")" 2
+_case "${DIRWRITE}" "rm SUSPENDED (ending it early is his call too)" \
+  "$(_b64 "rm ${HOME}/.claude/gate-review/SUSPENDED")" 2
 _case "${DIRWRITE}" "cp into merge-locks (the measured hole)" \
   "$(_b64 "cp /tmp/x ${HOME}/.claude/merge-locks/fake")" 2
 _case "${DIRWRITE}" "cp into gate-review/approved" \
@@ -182,6 +253,8 @@ _case "${DIRWRITE}" "cp OUT of the approved dir" \
   "$(_b64 "cp ${HOME}/.claude/gate-review/approved/commit-1 /tmp/x")" 0
 _case "${DIRWRITE}" "unrelated cp" \
   "$(_b64 'cp /tmp/a /tmp/b')" 0
+_case "${DIRWRITE}" "cat SUSPENDED" \
+  "$(_b64 "cat ${HOME}/.claude/gate-review/SUSPENDED")" 0
 _case "${DIRWRITE}" "cat a check record" \
   "$(_b64 "cat ${HOME}/.config/personify/checks/abc.json")" 0
 _case "${DIRWRITE}" "the check itself names no record path" \
@@ -250,6 +323,13 @@ _wcase "Write into personify stamps" \
   "${HOME}/.config/personify/stamps/x.json" 2
 _wcase "Write into merge-locks" \
   "${HOME}/.claude/merge-locks/x" 2
+_wcase "Write SUSPENDED into gate-review" \
+  "${HOME}/.claude/gate-review/SUSPENDED" 2
+# Assembled so the source holds no quoted leading tilde (SC2088).
+_wcase "Write SUSPENDED, tilde-spelled" \
+  "$(printf '%s/.claude/gate-review/SUSPENDED' '~')" 2
+_wcase "Write into gate-review/approved" \
+  "${HOME}/.claude/gate-review/approved/x" 2
 _wcase "the key file beside checks/ stays writable" \
   "${HOME}/.config/personify/pangram-key" 0
 _wcase "the voice guide beside checks/ stays writable" \

@@ -73,9 +73,11 @@ _verb_any="${_cmdpos}(rm|rmdir|touch|ln|mkdir|chmod|chown|truncate|dd|tee)[[:spa
 # In-place editors rewrite the file they are pointed at.
 _inplace="${_cmdpos}(sed[[:space:]]+[^|;&]*-i|perl[[:space:]]+[^|;&]*-i|ex[[:space:]])[^|;&]*${_dirs}"
 
-# Shell redirects: `> path`, `>> path`. The redirect operator is what makes
-# this a write, so the dir must follow it.
-_redirect=">>?[[:space:]]*[^[:space:]|;&]*${_dirs}"
+# Shell redirects: `> path`, `>> path`, `>| path`. The redirect operator is
+# what makes this a write, so the dir must follow it. `>|` (write even under
+# noclobber) was missed until 2026-09-24: the `|` stopped the path match, so
+# `echo x >| <dir>/file` passed.
+_redirect=">(>|\\|)?[[:space:]]*[^[:space:]|;&]*${_dirs}"
 
 blocked=""
 if printf '%s\n' "${cmd}" | grep -qE "${_redirect}"; then
