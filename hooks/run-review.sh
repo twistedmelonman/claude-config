@@ -34,6 +34,11 @@ unset CDPATH
 #   review.maxLines        - Max lines for full review (default: 1000)
 #   review.skipThreshold   - Skip AI review beyond this (default: 2500)
 #   review.chunkSize       - Max lines per file in chunked mode (default: 800)
+#   review.artifactSkip    - Skip AI review when every staged file is a data
+#                             artifact (bool, default: true). Commit mode only.
+#   review.artifactPatterns - Whitespace-separated globs that REPLACE the
+#                             artifact list (default: '*.log *.tsv *.csv
+#                             docs/scan/* docs/*/scan/*'). `*` matches `/`.
 #   review.model           - Claude model ID for code-reviewer (default: haiku for commits, sonnet for full-diff/codebase)
 #   review.adversarialModel - Claude model ID for adversarial-reviewer (default: claude-sonnet-4-6, always, regardless of mode)
 #   review.arbiterModel    - Claude model ID for the reconciliation arbiter
@@ -1982,6 +1987,59 @@ if [[ -n "${CHANGED_FILES}" ]]; then
     printf 'skipped: lockfile-only\n' >>"${REVIEW_LOG}" || true
     exit 0
   fi
+fi
+
+# Skip code review for data artifacts - scan logs, TSV/CSV exports.
+# Same all-or-nothing shape as the lockfile check: one code file in the set
+# and the whole commit is reviewed. Issue #481: a commit of 42 scan logs was
+# split six ways to get under the size gate and each piece was AI-reviewed as
+# if it were code.
+#
+# Per-repo overrides (repo-local beats global, like every review.* key):
+#   review.artifactSkip=false   turn the skip off entirely
+#   review.artifactPatterns     whitespace-separated globs that REPLACE the
+#                               default list, e.g. '*.log' to keep CSVs reviewed
+# Each glob becomes an anchored ERE: `*` matches any run of characters,
+# including `/`, and `?` matches one character.
+if [[ -n "${CHANGED_FILES}" ]]; then
+  _artifact_skip=$(git config --get --type=bool review.artifactSkip 2>/dev/null || echo "true")
+  if [[ "${_artifact_skip}" == "true" ]]; then
+    _artifact_patterns=$(git config --get review.artifactPatterns 2>/dev/null || echo "")
+    [[ -n "${_artifact_patterns//[[:space:]]/}" ]] \
+      || _artifact_patterns='*.log *.tsv *.csv docs/scan/* docs/*/scan/*'
+    # Escape ERE metacharacters first, then translate the two glob wildcards.
+    # `[` sits last in the bracket list: `[.` would open a collating element.
+    # One pattern per line in, one alternation out.
+    _artifact_re=$(tr -s '[:space:]' '\n' <<<"${_artifact_patterns}" \
+      | grep -v '^$' \
+      | sed -e 's/[]+^(){}|$.[\]/\\&/g' -e 's/\*/.*/g' -e 's/?/./g' \
+      | paste -sd '|' -) || _artifact_re=""
+    _non_artifact=""
+    if [[ -n "${_artifact_re}" ]]; then
+      # The sed above escaped only a `$` typed INSIDE a glob. This trailing `$`
+      # is the real end-of-string anchor: in double quotes a `$` before the
+      # closing quote is literal, so the ERE ends `)$`. Pinned by the
+      # artifact-only tests in tests/test_run_review_generated_file_skip_order.bats.
+      _artifact_re="^(${_artifact_re})$"
+      while IFS= read -r _af; do
+        [[ -z "${_af}" ]] && continue
+        if ! [[ "${_af}" =~ ${_artifact_re} ]]; then
+          _non_artifact="${_af}"
+          break
+        fi
+      done <<<"${CHANGED_FILES}"
+    else
+      _non_artifact="(no usable review.artifactPatterns)"
+    fi
+    if [[ -z "${_non_artifact}" ]]; then
+      log_info "Artifact-only changes detected - skipping code review (patterns: ${_artifact_patterns})"
+      log_info "  To review these anyway: git config review.artifactSkip false"
+      printf 'skipped: artifact-only (patterns: %s)\n' "${_artifact_patterns}" >>"${REVIEW_LOG}" || true
+      exit 0
+    fi
+    unset _artifact_patterns _artifact_re _non_artifact _af
+  fi
+  unset _artifact_skip
 fi
 
 # Progressive review strategy based on diff size
