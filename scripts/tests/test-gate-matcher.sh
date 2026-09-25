@@ -130,6 +130,115 @@ _case "${PERSONIFY}" "approved then unapproved" \
 _case "${PERSONIFY}" "approved then approved" \
   "$(_b64 "git commit -F ${APPROVED_TEXT} && gh pr create --body-file ${APPROVED_TEXT}")" 0
 
+echo "=== personify: gh pr review carries a body (claude-config#548) ==="
+# Review bodies reach another person exactly as a PR comment does. The event
+# flags (--approve, --request-changes, --comment) carry no text; only a body
+# flag makes the call gated, as with `gh pr edit`.
+_case "${PERSONIFY}" "pr review --comment with inline --body" \
+  "$(_b64 'gh pr review 5 --comment --body "x"')" 2
+_case "${PERSONIFY}" "pr review with inline -b" \
+  "$(_b64 'gh pr review 5 -b x')" 2
+_case "${PERSONIFY}" "pr review --body-file, NOT approved" \
+  "$(_b64 "gh pr review 5 --request-changes --body-file ${UNAPPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "pr review -F, NOT approved" \
+  "$(_b64 "gh pr review 5 --comment -F ${UNAPPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "pr review with global -R before the subcommand, inline" \
+  "$(_b64 'gh -R o/r pr review 5 --body x')" 2
+_case "${PERSONIFY}" "pr review --body-file, APPROVED" \
+  "$(_b64 "gh pr review 5 --request-changes --body-file ${APPROVED_TEXT}")" 0
+_case "${PERSONIFY}" "pr review --approve (no body) passes" \
+  "$(_b64 'gh pr review 5 --approve')" 0
+_case "${PERSONIFY}" "pr review --request-changes (no body) passes" \
+  "$(_b64 'gh pr review 5 --request-changes')" 0
+# Verbs need command position: the words inside prose must not gate.
+_case "${PERSONIFY}" "prose 'pr review --body' inside a grep pattern" \
+  "$(_b64 'gh pr view 5 --comments | grep "pr review --body"')" 0
+_case "${PERSONIFY}" "prose 'gh pr review --body' mid-sentence in echo" \
+  "$(_b64 'echo "then run gh pr review --body x to reply"')" 0
+
+echo "=== personify: gh api with a body field (claude-config#548) ==="
+# `-F/--field key=@path` reads the value from a file; that is the one form the
+# hook can verify. `-f/--raw-field` never expands @, so `-f body=@/abs` posts
+# the literal string and is inline text like any other.
+_case "${PERSONIFY}" "api -f body= inline" \
+  "$(_b64 "gh api repos/o/r/issues/5/comments -f body='hi there'")" 2
+_case "${PERSONIFY}" "api --field body= inline" \
+  "$(_b64 'gh api repos/o/r/issues/5/comments --field body=hi')" 2
+_case "${PERSONIFY}" "api --raw-field body= inline" \
+  "$(_b64 'gh api repos/o/r/issues/5/comments --raw-field body=hi')" 2
+_case "${PERSONIFY}" "api -F body= typed but inline" \
+  "$(_b64 'gh api repos/o/r/issues/5/comments -F body=hi')" 2
+_case "${PERSONIFY}" "api attached -fbody= inline" \
+  "$(_b64 'gh api repos/o/r/issues/5/comments -fbody=hi')" 2
+_case "${PERSONIFY}" "api --field=body= inline" \
+  "$(_b64 'gh api repos/o/r/issues/5/comments --field=body=hi')" 2
+_case "${PERSONIFY}" "api quoted \"body=...\" inline" \
+  "$(_b64 'gh api repos/o/r/pulls/5/comments -f "body=hi there"')" 2
+_case "${PERSONIFY}" "api after && with inline body" \
+  "$(_b64 'echo x && gh api repos/o/r/issues/5/comments -f body=hi')" 2
+_case "${PERSONIFY}" "api with a global flag before it, inline body" \
+  "$(_b64 'gh --hostname github.com api repos/o/r/issues/5/comments -f body=hi')" 2
+_case "${PERSONIFY}" "api -F body=@file, NOT approved" \
+  "$(_b64 "gh api repos/o/r/issues/5/comments -F body=@${UNAPPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "api -F body=@relative path" \
+  "$(_b64 'gh api repos/o/r/issues/5/comments -F body=@./msg.txt')" 2
+_case "${PERSONIFY}" "api -F body=@- (stdin, nothing to hash)" \
+  "$(_b64 'gh api repos/o/r/issues/5/comments -F body=@-')" 2
+_case "${PERSONIFY}" "api -f body=@abs (raw field posts the literal string)" \
+  "$(_b64 "gh api repos/o/r/issues/5/comments -f body=@${APPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "api approved -F body plus a second inline body field" \
+  "$(_b64 "gh api repos/o/r/issues/5/comments -F body=@${APPROVED_TEXT} -f body=x")" 2
+_case "${PERSONIFY}" "api -F body=@file, APPROVED" \
+  "$(_b64 "gh api repos/o/r/issues/5/comments -F body=@${APPROVED_TEXT}")" 0
+_case "${PERSONIFY}" "api --field body=@file, APPROVED" \
+  "$(_b64 "gh api repos/o/r/issues/5/comments --field body=@${APPROVED_TEXT}")" 0
+_case "${PERSONIFY}" "api quoted -F \"body=@file\", APPROVED" \
+  "$(_b64 "gh api repos/o/r/issues/5/comments -F \"body=@${APPROVED_TEXT}\"")" 0
+_case "${PERSONIFY}" "api --field=body=@file, APPROVED" \
+  "$(_b64 "gh api repos/o/r/issues/5/comments --field=body=@${APPROVED_TEXT}")" 0
+_case "${PERSONIFY}" "api GET, no fields" \
+  "$(_b64 'gh api repos/o/r/pulls/5')" 0
+_case "${PERSONIFY}" "api with a non-body field" \
+  "$(_b64 'gh api repos/o/r/issues/5 -X PATCH -f state=closed')" 0
+_case "${PERSONIFY}" "api with a title field (titles stay ungated)" \
+  "$(_b64 'gh api repos/o/r/issues -f title=t')" 0
+_case "${PERSONIFY}" "api with a field whose name only ends in body" \
+  "$(_b64 'gh api repos/o/r/x -f nobody=1')" 0
+_case "${PERSONIFY}" "api --jq .body reads, does not write" \
+  "$(_b64 'gh api repos/o/r/issues/5 --jq .body')" 0
+_case "${PERSONIFY}" "api graphql query with no body field" \
+  "$(_b64 "gh api graphql -f query='{ viewer { login } }'")" 0
+_case "${PERSONIFY}" "api graphql query READING comment bodies" \
+  "$(_b64 "gh api graphql -f query='{ repository(owner:\"o\",name:\"r\") { issue(number:5) { comments(first:5) { nodes { body } } } } }'")" 0
+_case "${PERSONIFY}" "api graphql addComment mutation with inline body" \
+  "$(_b64 "gh api graphql -f query='mutation { addComment(input: {subjectId: \"X\", body: \"hi\"}) { clientMutationId } }'")" 2
+# The usual way to write a mutation puts the query on its own lines. The hook
+# splits a command into per-line segments, so the mutation and `body:` sit on
+# lines that carry no `gh api`. Verified 2026-09-25: these returned 0.
+_case "${PERSONIFY}" "api graphql mutation on the line after gh api" \
+  "$(_b64 "gh api graphql -f query='
+mutation { addComment(input: {subjectId: \"X\", body: \"hi\"}) { clientMutationId } }'")" 2
+_case "${PERSONIFY}" "api graphql mutation spread across lines" \
+  "$(_b64 "gh api graphql -f query='
+mutation {
+  addComment(input: {
+    subjectId: \"X\"
+    body: \"hi\"
+  }) { clientMutationId }
+}'")" 2
+_case "${PERSONIFY}" "multi-line read-only graphql query selecting body" \
+  "$(_b64 "gh api graphql -f query='
+{ repository(owner: \"o\", name: \"r\") {
+    issue(number: 5) { comments(first: 5) { nodes { body } } }
+} }'")" 0
+_case "${PERSONIFY}" "api graphql mutation with body from a variable" \
+  "$(_b64 "gh api graphql -f query='mutation(\$b: String!) { addComment(input: {subjectId: \"X\", body: \$b}) { clientMutationId } }' -f b=hi")" 2
+# Verbs need command position: the words inside prose must not gate.
+_case "${PERSONIFY}" "prose 'gh api -F body=' mid-sentence in echo" \
+  "$(_b64 'echo "the gh api -F body=x form is gated now"')" 0
+_case "${PERSONIFY}" "prose 'gh api body' in an approved PR title" \
+  "$(_b64 "gh pr create --title \"gate gh api -f body= fields\" --body-file ${APPROVED_TEXT}")" 0
+
 echo "=== personify: time-boxed suspension ==="
 # gate-review.sh suspended reads SUSPENDED from the fixture GATE_REVIEW_DIR.
 # The file is written straight into the fixture here, as Andrew would write
@@ -145,6 +254,10 @@ _case "${PERSONIFY}" "suspended through tomorrow: unapproved -F passes" \
   "$(_b64 "git commit -F ${UNAPPROVED_TEXT}")" 0
 _case "${PERSONIFY}" "suspended through tomorrow: inline PR body passes" \
   "$(_b64 'gh pr create --body "x"')" 0
+_case "${PERSONIFY}" "suspended through tomorrow: inline review body passes" \
+  "$(_b64 'gh pr review 5 --comment --body "x"')" 0
+_case "${PERSONIFY}" "suspended through tomorrow: inline api body passes" \
+  "$(_b64 'gh api repos/o/r/issues/5/comments -f body=hi')" 0
 printf '%s\n' "$(date +%F)" >"${SUSP}"
 _case "${PERSONIFY}" "suspended through today: unapproved -F passes" \
   "$(_b64 "git commit -F ${UNAPPROVED_TEXT}")" 0
@@ -182,6 +295,10 @@ _case "${PERSONIFY}" "no SUSPENDED file: unapproved -F BLOCKS (control)" \
   "$(_b64 "git commit -F ${UNAPPROVED_TEXT}")" 2
 _case "${PERSONIFY}" "no SUSPENDED file: inline PR body BLOCKS (control)" \
   "$(_b64 'gh pr create --body "x"')" 2
+_case "${PERSONIFY}" "no SUSPENDED file: inline review body BLOCKS (control)" \
+  "$(_b64 'gh pr review 5 --comment --body "x"')" 2
+_case "${PERSONIFY}" "no SUSPENDED file: inline api body BLOCKS (control)" \
+  "$(_b64 'gh api repos/o/r/issues/5/comments -f body=hi')" 2
 
 echo "=== dir-write: writes into the lock dirs must BLOCK (exit 2) ==="
 # SUSPENDED turns the whole gate off, so an agent that can create it can
