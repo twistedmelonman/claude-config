@@ -48,7 +48,7 @@ entries are omitted here.
 | PreToolUse `Bash` | `~/.claude/scripts/hook-block-all.sh` (chain below) |
 | PreToolUse `Write`, `Edit` | `hook-block-merge-locks-write.sh`: blocks writes into `merge-locks/`, `gate-review/`, and personify's `checks/` and `stamps/` |
 | PreToolUse `EnterWorktree` | `hook-block-enter-worktree.sh` |
-| PostToolUse `Bash\|Read` | `hook-redact-secret-output.py` |
+| PostToolUse `Bash\|Read` | `hook-redact-secret-output.py`: redacts env secret values, gitleaks findings, vendor prefixes gitleaks lacks, and the whole stdout of credential-printing commands (`op read`, `security -w`, ...) |
 | Stop, SubagentStop | `hook-budget-guard.sh` |
 
 `hook-block-all.sh` runs these in order and stops at the first block:

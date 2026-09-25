@@ -1,0 +1,6 @@
+VERDICT: FAIL
+
+ISSUE: `%{submissionId}` will be sent literally; Netlify Forms has no documented variable substitution syntax for hidden field values
+SEVERITY: BLOCKING
+LOCATION: contact.html:10
+DETAILS: The `subject` hidden field previously contained a static string that worked correctly. This diff appends `%{submissionId}` expecting runtime substitution, but Netlify Forms does not document a `%{...}` templating system for form field values. The submission ID is available in the Netlify dashboard and notification emails as metadata, but not as an injectable variable in HTML form fields. Fix options: (1) verify Netlify docs confirm this syntax works in hidden subject fields — if no documentation exists, remove the placeholder; (2) use a Netlify Function webhook to post-process submissions and forward a notification with the real ID; (3) accept a static subject and drop the placeholder entirely.

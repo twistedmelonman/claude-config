@@ -1,0 +1,6 @@
+VERDICT: FAIL
+
+ISSUE: Submission ID placeholder won't be replaced; Netlify forms don't support `%{...}` syntax
+SEVERITY: BLOCKING
+LOCATION: contact.html:10
+DETAILS: The diff uses `%{submissionId}` as a placeholder, but Netlify Forms does not have a built-in variable substitution system for this syntax. Netlify form submissions include an ID in the submission object and notification emails, but that ID is not available as a template variable in form field values. This placeholder will be sent literally to the notification email subject, producing "T&J Cleaning inquiry — %{submissionId}" instead of an actual ID. Either: (1) confirm Netlify supports this syntax (check Netlify docs for form field variable substitution), or (2) use a Netlify Form submission handler (webhook or serverless function) to inject the ID server-side after submission is created, or (3) accept that the ID cannot be embedded in the subject line via HTML alone.

@@ -188,6 +188,70 @@ per-file manifest fact, not a cross-file integration concern.
 
 ---
 
+## A Claim the Reviewer Cannot Check Does Not Block
+
+The commit and full-diff reviewers run with `--tools ""`. They cannot read a
+file outside the diff, and they cannot read a vendor's documentation. Two
+kinds of BLOCKING finding therefore state something the reviewer had no way to
+check. Both have blocked correct commits.
+
+1. **External behavior** (claude-config#455, #555). An example is "Netlify
+   does not support `%{submissionId}`". The variable is documented. Haiku
+   blocked it 3 times in 3 runs, and once the arbiter upheld the block.
+2. **A LOCATION outside the diff** (claude-config#488). One finding cited
+   `tally.sh`. That file never existed in the repository.
+
+**The rule:** `downgrade_unverifiable_findings` in `hooks/run-review.sh`
+changes such a finding from BLOCKING to WARNING. It runs on both commit-time
+reviewers before arbitration, and on the full-diff reviewer. It uses the same
+promotion and sentinel rules as the version-pin downgrade above.
+
+This check weakens a gate, so each rule errs toward blocking. A false block
+costs one command. A false pass ships the defect.
+
+- **Security exemption.** Neither check fires when the finding names a
+  security or data-loss class: a token, a secret, a credential, auth,
+  logging, an injection, `eval`, `rm -rf`, or a CVE. This applies to the
+  location check too, so the literal #488 finding (a leaked token in a file
+  that never existed) still blocks. The arbiter stays its backstop.
+- **External behavior.** A named third-party platform must be the subject of
+  the negative claim, for example "Netlify Forms does not support this
+  syntax" or "macOS BSD sed does not support POSIX bracket expressions".
+  "The new parser does not support that flag" names no platform, so it still
+  blocks.
+- **Location.** The check fires only when LOCATION holds a file name with an
+  extension and nothing uncertain. A glob, a directory, or an extensionless
+  path is uncertain. The check never fires when the finding mentions a
+  changed file or its basename anywhere, which covers `#L120` anchors,
+  backslash paths, and names with spaces or non-ASCII characters. It also
+  never fires when the finding says the change should have edited a file,
+  for example "settings.json has no entry for the new hook", because such a
+  file is outside the diff by definition. The script reads the diff headers
+  with any prefix style and decodes git's quoted paths.
+- **Block boundaries.** A finding starts at any `ISSUE:` line, also after a
+  number, a bullet, or markdown emphasis. A block with two `SEVERITY:` lines
+  is never downgraded.
+- **Survivors.** The verdict is promoted only when `has_blocking_severity`
+  finds no BLOCKING left. That function strips markdown, so a
+  `**SEVERITY:** BLOCKING` finding keeps the verdict at FAIL.
+- Each downgrade adds a `downgraded:` line to `REVIEW_LOG`, so you can
+  measure the rate.
+
+The shared prompt rules make the same point first: a Kind B claim is never
+BLOCKING. The script check is the backstop for when the model ignores that
+rule.
+
+The chunked commit path and codebase mode do not run this check. Codebase
+mode has Read, Grep, and Glob, so it can open the files it cites.
+
+**Developer intent at pre-push** (claude-config#489). The full-diff reviewer
+now gets the commit messages for `origin/main..HEAD` (or `main..HEAD`) in its
+prompt, labeled as context and not as proof. A tradeoff that the author
+states and accepts is not reported again. A message never excuses a real
+cross-file defect.
+
+---
+
 ## Return to Main Documentation
 
 → Return to `~/.claude/CLAUDE.md`
