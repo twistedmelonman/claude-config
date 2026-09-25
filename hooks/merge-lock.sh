@@ -225,6 +225,41 @@ lock_ttl() {
   fi
 }
 
+# --- Authorization ledger ----------------------------------------------------
+
+# Append-only record of every lock granted (dev-env#109). A lock file is
+# deleted when it expires, so without this there is nothing left to show that a
+# merge was ever authorized, and a merge done in the GitHub UI looks exactly
+# like one that went through the gate. scripts/merge-audit.sh joins merged PRs
+# against this file to make those merges visible.
+#
+# It lives inside LOCK_DIR so the same Write/Edit and Bash write blocks that
+# protect the locks also protect it. find_locks only matches
+# <owner>/<repo>/pr-N.lock and the legacy purge only matches pr-*.lock at the
+# top level, so neither touches this file.
+#
+# The header records when recording began. The audit reports a merge older
+# than that as unclassified rather than unauthorized, because the ledger
+# cannot speak to a time before it existed.
+LEDGER_FILE="${LOCK_DIR}/ledger.tsv"
+
+append_ledger() {
+  local ts="$1" repo="$2" pr="$3" ttl="$4" user="$5" reason="$6"
+  if [[ ! -f "${LEDGER_FILE}" ]]; then
+    # noclobber makes creation atomic: if two authorize runs race here, the
+    # loser's `>` fails instead of truncating the winner's header and rows.
+    (
+      set -o noclobber
+      printf '# merge-lock ledger v1, started %s\n# timestamp\trepo\tpr\tttl_seconds\tauthorized_by\treason\n' \
+        "${ts}" >"${LEDGER_FILE}"
+    ) 2>/dev/null || true
+  fi
+  # Tabs and newlines in the free-text reason would corrupt the row layout.
+  reason="${reason//$'\t'/ }"
+  reason="${reason//$'\n'/ }"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${ts}" "${repo}" "${pr}" "${ttl}" "${user}" "${reason}" >>"${LEDGER_FILE}"
+}
+
 # --- Lock operations ---------------------------------------------------------
 
 # The optional 4th argument names the repo to write the lock under; it
@@ -256,6 +291,8 @@ create_merge_lock() {
     echo "TTL_SECONDS=${ttl}"
     echo "REASON=${reason}"
   } >"${lock_file}"
+
+  append_ledger "${ts}" "${repo}" "${pr_number}" "${ttl}" "${user}" "${reason}"
 
   echo -e "${GREEN}[merge-lock]${NC} Authorization created for ${repo}#${pr_number}"
   echo -e "${GREEN}[merge-lock]${NC} Valid for $((ttl / 60)) minutes"
