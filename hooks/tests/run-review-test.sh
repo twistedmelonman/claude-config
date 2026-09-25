@@ -52,6 +52,10 @@
 #       object with no prose in it, so the VERDICT block is rendered out of
 #       .structured_output. Caught by a live dry-run, not by any mock — every
 #       mock was green while the gate would have hard-blocked every commit
+#   59-61. A BLOCKING finding the reviewer could not have verified does not
+#       block: a LOCATION outside the diff (#488) or an external-behavior claim
+#       (#455/#555); the same finding located in the diff still blocks
+#   62-63. Full-diff mode puts the branch commit messages in the prompt (#489)
 
 set -euo pipefail
 
@@ -3412,6 +3416,125 @@ assert_contains \
   "control: the renderer emitted a matchable SEVERITY: BLOCKING line" \
   "SEVERITY: BLOCKING" \
   "${t58_log}"
+
+# =========================================================
+# TEST 59-60: a BLOCKING finding whose LOCATION names no file in the diff is
+# downgraded end to end (claude-config#488); the same finding located in the
+# diff still blocks. #488's reviewer cited `tally.sh`, which never existed.
+# =========================================================
+echo ""
+echo "=== Test 59-60: LOCATION outside the diff does not block (#488) ==="
+
+_t59_run() {
+  local loc="$1" label="$2"
+  _t59_rc=0
+  setup_repo
+  stage_small_change
+  make_mock_claude "${TMPDIR_TEST}/mock${label}" 0 "VERDICT: FAIL
+
+ISSUE: Hardcoded GitHub API token and unsafe rm with eval
+SEVERITY: BLOCKING
+LOCATION: ${loc}
+DETAILS: A token is embedded and eval runs rm on untrusted input."
+  rm -f "${TMPDIR_TEST}/test${label}-review.log"
+  cd "${REPO_DIR}"
+  REVIEW_LOG="${TMPDIR_TEST}/test${label}-review.log" CLAUDE_CLI="${TMPDIR_TEST}/mock${label}/claude" \
+    bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || _t59_rc=$?
+  cd - >/dev/null
+}
+
+_t59_run "tally.sh:14" 59 >/dev/null
+exit_t59="${_t59_rc}"
+log_t59=$(cat "${TMPDIR_TEST}/test59-review.log" 2>/dev/null || true)
+assert_eq "#488: a finding against a file not in the diff does not block" "0" "${exit_t59}"
+assert_contains \
+  "#488: the downgrade is recorded in the review log" \
+  "downgraded: LOCATION names no file in the reviewed diff" \
+  "${log_t59}"
+
+_t59_run "foo.sh:2" 60 >/dev/null
+exit_t60="${_t59_rc}"
+assert_eq "#488 control: the same finding located in the diff still blocks" "1" "${exit_t60}"
+
+# =========================================================
+# TEST 61: an external-behavior claim does not block end to end (#455/#555).
+# Wording is the measured live Haiku finding from the #455 reproduction.
+# =========================================================
+echo ""
+echo "=== Test 61: external-behavior claim does not block (#455/#555) ==="
+
+setup_repo
+stage_small_change
+make_mock_claude "${TMPDIR_TEST}/mock61" 0 "VERDICT: FAIL
+
+ISSUE: Submission ID placeholder syntax is invalid for Netlify Forms
+SEVERITY: BLOCKING
+LOCATION: foo.sh:2
+DETAILS: Netlify Forms does not support this syntax. This will be sent literally in the email subject."
+TEST61_LOG="${TMPDIR_TEST}/test61-review.log"
+rm -f "${TEST61_LOG}"
+exit_t61=0
+cd "${REPO_DIR}"
+REVIEW_LOG="${TEST61_LOG}" CLAUDE_CLI="${TMPDIR_TEST}/mock61/claude" \
+  bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || exit_t61=$?
+cd - >/dev/null
+log_t61=$(cat "${TEST61_LOG}" 2>/dev/null || true)
+assert_eq "#455: an unverifiable external-behavior claim does not block" "0" "${exit_t61}"
+assert_contains \
+  "#455: the downgrade is recorded in the review log" \
+  "downgraded: claim about external tool/service behavior" \
+  "${log_t61}"
+
+# =========================================================
+# TEST 62-63: full-diff mode puts the branch's commit messages in the prompt
+# (claude-config#489), and still blocks on a real BLOCKING finding.
+# =========================================================
+echo ""
+echo "=== Test 62-63: full-diff prompt carries the branch's commit messages (#489) ==="
+
+setup_repo
+cd "${REPO_DIR}"
+git branch -M main
+git checkout -q -b feature
+echo "echo one" >>foo.sh
+git add foo.sh
+git commit -q -m "feat: first change" -m "RATIONALE-ONE outage window accepted" --no-verify
+echo "echo two" >>foo.sh
+git add foo.sh
+git commit -q -m "feat: second change" -m "RATIONALE-TWO destroy/recreate is deliberate" --no-verify
+cd - >/dev/null
+
+MOCK62_DIR="${TMPDIR_TEST}/mock62"
+mkdir -p "${MOCK62_DIR}"
+cat >"${MOCK62_DIR}/claude" <<EOF
+#!/usr/bin/env bash
+if [[ "\$1" == "--version" ]]; then
+  echo "mock-claude 0.0.0-test"
+  exit 0
+fi
+cat >> "${MOCK62_DIR}/received_prompt.txt"
+echo "VERDICT: FAIL
+
+ISSUE: Cross-file inconsistency
+SEVERITY: BLOCKING
+LOCATION: foo.sh:2
+DETAILS: Fix the cross-file mismatch."
+exit 0
+EOF
+chmod +x "${MOCK62_DIR}/claude"
+rm -f "${MOCK62_DIR}/received_prompt.txt"
+
+exit_t62=0
+cd "${REPO_DIR}"
+git diff main...HEAD | REVIEW_LOG="${TMPDIR_TEST}/test62-review.log" CLAUDE_CLI="${MOCK62_DIR}/claude" \
+  bash "${SUBJECT}" --mode=full-diff 2>/dev/null || exit_t62=$?
+cd - >/dev/null
+received62="$(cat "${MOCK62_DIR}/received_prompt.txt" 2>/dev/null || echo "")"
+
+assert_contains "#489: full-diff prompt carries the newest commit's message" "RATIONALE-TWO" "${received62}"
+assert_contains "#489: full-diff prompt carries the older commit's message" "RATIONALE-ONE" "${received62}"
+assert_contains "#489: the messages arrive under the intent header" "DEVELOPER INTENT (commit messages on this branch" "${received62}"
+assert_eq "#489 control: a real BLOCKING cross-file finding still blocks the push" "1" "${exit_t62}"
 
 # =========================================================
 # Summary

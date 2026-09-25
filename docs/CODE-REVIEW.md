@@ -188,6 +188,51 @@ per-file manifest fact, not a cross-file integration concern.
 
 ---
 
+## A Claim the Reviewer Cannot Check Does Not Block
+
+The commit and full-diff reviewers run with `--tools ""`. They cannot read a
+file outside the diff, and they cannot read a vendor's documentation. Two
+kinds of BLOCKING finding therefore state something the reviewer had no way to
+check. Both have blocked correct commits.
+
+1. **External behavior** (claude-config#455, #555). An example is "Netlify
+   does not support `%{submissionId}`". The variable is documented. Haiku
+   blocked it 3 times in 3 runs, and once the arbiter upheld the block.
+2. **A LOCATION outside the diff** (claude-config#488). One finding cited
+   `tally.sh`. That file never existed in the repository.
+
+**The rule:** `downgrade_unverifiable_findings` in `hooks/run-review.sh`
+changes such a finding from BLOCKING to WARNING. It runs on both commit-time
+reviewers before arbitration, and on the full-diff reviewer. It uses the same
+promotion and sentinel rules as the version-pin downgrade above.
+
+- The external-behavior check matches narrow wording: "undocumented", "does
+  not support ... syntax", "will be sent literally", or "placeholder syntax
+  is invalid". It does not fire when the finding also names a security or
+  data-loss class, such as a hardcoded credential, an injection, `eval`,
+  `rm -rf`, or a CVE.
+- The location check fires only when LOCATION contains a path and none of
+  its paths matches a file in the diff. The script reads the diff headers
+  with any prefix style, so `diff.mnemonicPrefix` does not affect the match.
+  An `unspecified` or empty LOCATION is never downgraded.
+- Each downgrade adds a `downgraded:` line to `REVIEW_LOG`, so you can
+  measure the rate.
+
+The shared prompt rules make the same point first: a Kind B claim is never
+BLOCKING. The script check is the backstop for when the model ignores that
+rule.
+
+The chunked commit path and codebase mode do not run this check. Codebase
+mode has Read, Grep, and Glob, so it can open the files it cites.
+
+**Developer intent at pre-push** (claude-config#489). The full-diff reviewer
+now gets the commit messages for `origin/main..HEAD` (or `main..HEAD`) in its
+prompt, labeled as context and not as proof. A tradeoff that the author
+states and accepts is not reported again. A message never excuses a real
+cross-file defect.
+
+---
+
 ## Return to Main Documentation
 
 → Return to `~/.claude/CLAUDE.md`

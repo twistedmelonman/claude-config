@@ -1,0 +1,6 @@
+VERDICT: FAIL
+
+ISSUE: Submission ID placeholder syntax is invalid for Netlify Forms
+SEVERITY: BLOCKING
+LOCATION: contact.html:10
+DETAILS: The subject field uses `%{submissionId}` as a placeholder. Netlify Forms does not support this syntax. Netlify's dynamic field substitution uses `{{field_name}}` format for form fields, not a built-in `submissionId` variable. This will be sent literally in the email subject, not replaced with an actual submission ID.

@@ -1041,7 +1041,21 @@ NOT:
   "printf appends another newline, producing a blank line between blocks."
 A Kind B claim stated as fact is wrong even when the underlying suspicion is
 right, because you are reporting a guess as a measurement — and a human then
-spends a command disproving it. Confidence does not rescue it. No exceptions.'
+spends a command disproving it. Confidence does not rescue it. No exceptions.
+
+KIND B ALSO COVERS what a hosted service, platform, or third-party API
+supports, documents, or does with a value: "Netlify does not substitute this
+variable", "GitHub Actions expressions are case-sensitive here", "this API
+ignores that field". You have no network access and cannot read their
+documentation, so your memory of it is a guess too.
+
+A KIND B FINDING IS NEVER BLOCKING. Its severity is WARNING at most, however
+sure you are. When the developer intent cites documentation or a test result
+for the behavior, do not report the opposite claim at all.
+
+If you have no tools, LOCATION must name a file that appears in the diff you
+were shown. A finding about a file you were not shown is a guess about its
+contents.'
 
 # --- Version-pin-unfamiliarity downgrade ---
 # Rationale and rules: docs/CODE-REVIEW.md
@@ -1190,6 +1204,198 @@ downgrade_version_unfamiliarity_findings() {
     # extracts it with sed and would not pick up a helper defined elsewhere in
     # the file. Keep it self-contained. `|| true` guards grep's exit 1 on an
     # all-lines-match (impossible here, but set -e is on).
+    _result=$(printf '%s\n' "${_result}" | grep -vE "^${STRUCTURED_MARKER:-__REVIEW_BLOCKING__} " || true)
+  fi
+
+  printf '%s\n' "${_result}"
+}
+
+# --- Paths a diff touches ---
+# Prints one path per line for every file the unified diff $1 names, read from
+# its own headers rather than from `git diff --name-only`. Full-diff mode gets
+# its diff on stdin with no staged index to ask, so the headers are the only
+# source that describes exactly what the reviewer was shown.
+#
+# Prefix-agnostic on purpose. `diff.mnemonicPrefix` (set on Andrew's machines)
+# writes `c/`, `i/`, `w/` instead of `a/`, `b/`, and `diff.noprefix` writes
+# none, so each header path is printed both as-is and with a one-letter prefix
+# removed. An extra entry only makes the location check below more permissive,
+# which is the safe direction for a check that can only downgrade.
+diff_changed_paths() {
+  printf '%s\n' "$1" | awk '
+    /^(\+\+\+|---) / {
+      p = substr($0, 5)
+      sub(/\t.*$/, "", p)
+      gsub(/^"|"$/, "", p)
+      if (p == "/dev/null" || p == "") next
+      print p
+      if (p ~ /^[a-z]\//) print substr(p, 3)
+      next
+    }
+    /^rename (from|to) / {
+      p = $0
+      sub(/^rename (from|to) /, "", p)
+      print p
+    }' | sort -u
+}
+
+# --- Unverifiable-claim downgrade (claude-config#455, #555, #488) ---
+#
+# Reviewers here run with `--tools ""`: no network, no filesystem. Two kinds
+# of BLOCKING finding are therefore claims the reviewer had no way to check,
+# and both have blocked correct commits:
+#
+#   1. EXTERNAL BEHAVIOR (#455, #555). "Netlify does not support %{...}
+#      syntax", "BSD sed does not support [[:space:]]". The prompt's Kind B
+#      rule already says such a claim must be phrased as a question; nothing
+#      enforced it, so a flat false assertion still blocked. #455 reproduced
+#      3 of 3 times on Haiku against a documented Netlify variable, once with
+#      the arbiter upholding it.
+#   2. A LOCATION OUTSIDE THE DIFF (#488). A finding against `tally.sh` when
+#      the diff touched one `.disabled` file. The reviewer was shown only the
+#      diff, so a finding that names no file in it is misattributed or
+#      invented. It could not have read the file it cites.
+#
+# Both are rewritten BLOCKING -> WARNING, so the human still sees them. The
+# verdict is promoted and the structured sentinel dropped only when nothing
+# blocking survives, exactly as downgrade_version_unfamiliarity_findings does.
+#
+# What keeps a real defect blocking:
+#   - Kind 1 never fires on a finding that mentions a security or data-loss
+#     class (_knownbad_re). A reviewer cannot launder a credential leak into
+#     a warning by calling it unsupported. The location check has no such
+#     exemption: a security finding against a file the reviewer never saw is
+#     #488 itself.
+#   - The location check fires only when LOCATION holds something path-shaped
+#     and NONE of those paths matches a changed file. "unspecified", an empty
+#     LOCATION, and the synthetic fail-closed findings (#450) are untouched.
+#   - Markdown-bolded severities are not recognized, so they stay blocking.
+#
+# $1 = reviewer output (VERDICT/ISSUE/SEVERITY/LOCATION/DETAILS blocks)
+# $2 = newline-separated paths the reviewed diff touches (may be empty, which
+#      disables the location check rather than downgrading everything)
+#
+# Self-contained, like its sibling above: tests/test_unverifiable_claim_downgrade.bats
+# extracts this one function with sed.
+downgrade_unverifiable_findings() {
+  local _output="$1"
+  local _changed="$2"
+  local -a _out_lines=()
+  local -a _block=()
+  local -a _toks=()
+  local _line _block_text _issue_title _reason _loc _loc_words _tok _path _f _matched _pathlike
+  local _result
+  local _downgraded="no"
+
+  # A claim about what a third-party tool, service, or platform supports,
+  # documents, or does with a value. Built from the measured #455 findings
+  # (six live Haiku/Sonnet findings, plus the original report) and the Kind B
+  # findings in the local reviewer-disagreements logs. Deliberately narrow:
+  # "does not support" alone also describes an in-diff defect ("the function
+  # does not support null input"), so it must be followed by a syntax noun.
+  local _external_re='undocumented|not (a |an )?documented|no documented|not documented|does ?n.?o?t document|documented (syntax|token|variable|placeholder|list|format|flag|option)|(does ?n.?t|does not|do ?n.?t|do not|did ?n.?t|did not) support[^.]{0,60}(syntax|placeholder|variable|substitution|interpolat|templat|token|flag|option|expression|bracket|construct|keyword|quantifier)|not supported (by|in|on) |unsupported by|(render|sent|send|submit|appear|display|pass|emit|print)[a-z]* (as |to )?(a |the )?literal(ly| string| text)|(syntax|placeholder|token) is (invalid|incorrect|not (valid|supported|recognized))|not a (valid|recognized|supported|known) [a-z ]{0,30}(token|variable|placeholder|flag|option|syntax|parameter)'
+
+  # A finding that names one of these classes is never downgraded as Kind 1,
+  # whatever else it says. "inject" alone is NOT here on purpose: a measured
+  # #455 finding suggested "a serverless function to inject the ID", and bare
+  # "token" is absent for the same reason (#455's own wording). "rce" is
+  # word-bounded because grep -i otherwise finds it inside "percent" — which
+  # is how a measured finding ("percent-brace notation") first escaped.
+  local _knownbad_re='hard-?coded|leaked|secret|credential|password|api[ _-]?key|bearer|injection|(^|[^a-z])eval([^a-z]|$)|rm -rf|CVE-|vulnerab|exploit|(^|[^a-z])rce([^a-z]|$)|privilege|traversal|XSS|CSRF|SSRF|data loss'
+
+  _flush_block() {
+    if [[ ${#_block[@]} -eq 0 ]]; then
+      return 0
+    fi
+    _block_text=$(printf '%s\n' "${_block[@]}")
+    _reason=""
+    if printf '%s\n' "${_block_text}" | grep -qiE '^SEVERITY:[[:space:]]*BLOCKING'; then
+      # Kind 1: external-behavior claim.
+      if printf '%s\n' "${_block_text}" | grep -qiE "${_external_re}" \
+        && ! printf '%s\n' "${_block_text}" | grep -qiE "${_knownbad_re}"; then
+        _reason="claim about external tool/service behavior the reviewer cannot check (#455/#555)"
+      fi
+      # Kind 2: LOCATION names no file in the diff.
+      if [[ -z "${_reason}" && -n "${_changed//[[:space:]]/}" ]]; then
+        _loc=$(printf '%s\n' "${_block_text}" | grep -im1 '^LOCATION:' | sed -E 's/^LOCATION:[[:space:]]*//I' || true)
+        _pathlike=0
+        _matched=0
+        # Split on whitespace, commas, "+", and strip quoting and :line tails.
+        # read -a, not an unquoted $(...): a LOCATION of "*.sh" must not glob.
+        _loc_words=$(printf '%s\n' "${_loc}" | sed -E 's/[][`"(),+;]/ /g') || _loc_words=""
+        read -r -a _toks <<<"${_loc_words}"
+        for _tok in "${_toks[@]}"; do
+          _path="${_tok%%:*}"
+          _path="${_path#./}"
+          # Path-shaped: a basename with an extension, or a slash between
+          # two multi-character segments. "N/A", "line", "e.g." are not.
+          if [[ "${_path##*/}" =~ \.[A-Za-z0-9_-]+$ ]] || [[ "${_path}" =~ [A-Za-z0-9_.-]{2,}/[A-Za-z0-9_.-]{2,} ]]; then
+            _pathlike=1
+            while IFS= read -r _f; do
+              [[ -n "${_f}" ]] || continue
+              if [[ "${_f}" == "${_path}" || "${_f}" == */"${_path}" || "${_path}" == */"${_f}" ]]; then
+                _matched=1
+                break
+              fi
+            done <<<"${_changed}"
+          fi
+          [[ ${_matched} -eq 1 ]] && break
+        done
+        if [[ ${_pathlike} -eq 1 && ${_matched} -eq 0 ]]; then
+          _reason="LOCATION names no file in the reviewed diff (#488): ${_loc}"
+        fi
+      fi
+    fi
+    if [[ -n "${_reason}" ]]; then
+      _issue_title=$(printf '%s\n' "${_block_text}" | grep -im1 '^ISSUE:' || true)
+      [[ -n "${_issue_title}" ]] || _issue_title="(untitled issue)"
+      log_warn "Downgrading BLOCKING -> WARNING (${_reason}): ${_issue_title}"
+      # Recorded in the per-repo log so the rate is measurable (#488).
+      printf 'downgraded: %s: %s\n' "${_reason}" "${_issue_title}" >>"${REVIEW_LOG:-/dev/null}" 2>/dev/null || true
+      _downgraded="yes"
+      _block_text=$(printf '%s\n' "${_block_text}" | sed -E 's/^(SEVERITY:[[:space:]]*)BLOCKING/\1WARNING/I')
+    fi
+    _out_lines+=("${_block_text}")
+    _block=()
+  }
+
+  while IFS= read -r _line; do
+    if [[ "${_line}" =~ ^ISSUE: ]]; then
+      _flush_block
+    fi
+    _block+=("${_line}")
+  done <<<"${_output}"
+  _flush_block
+
+  unset -f _flush_block
+
+  if [[ ${#_out_lines[@]} -eq 0 ]]; then
+    return 0
+  fi
+
+  _result=$(printf '%s\n' "${_out_lines[@]}")
+
+  # Same promotion rule as the version-pin sibling: only when a downgrade
+  # fired AND nothing blocking survives. The awk rewrites the FIRST verdict
+  # line only, case-insensitively; see the sibling for why not sed or sub().
+  if [[ "${_downgraded}" == "yes" ]] \
+    && ! printf '%s\n' "${_result}" | grep -qiE 'SEVERITY:[[:space:]]*BLOCKING'; then
+    log_warn "All BLOCKING findings were unverifiable claims; promoting VERDICT to PASS"
+    _result=$(printf '%s\n' "${_result}" | awk '
+      BEGIN { done = 0 }
+      !done && toupper($0) ~ /^VERDICT:[[:space:]]*(FAIL|REVISE)/ {
+        rest = $0
+        sub(/^[^:]*:[[:space:]]*/, "", rest)
+        upper = toupper(rest)
+        keep = (upper ~ /^REVISE/) ? substr(rest, 7) : substr(rest, 5)
+        print "VERDICT: PASS" keep
+        done = 1
+        next
+      }
+      { print }
+    ')
+    # The structured blocking=true sentinel is the very claim just ruled
+    # unverifiable; left in place, output_blocks() would still block on it.
     _result=$(printf '%s\n' "${_result}" | grep -vE "^${STRUCTURED_MARKER:-__REVIEW_BLOCKING__} " || true)
   fi
 
@@ -1483,15 +1689,16 @@ file_reviewer_disagreement_issue() {
 #                              before obtaining the proposed commit log
 #                              message"). Use --message-file from the
 #                              commit-msg hook to inject the real one.
+#   full-diff               -> every commit message on the branch being pushed
+#                              (base..HEAD, newest first, capped), where base
+#                              is origin/main, else main — the same base the
+#                              dotfiles pre-push hook diffs against. Falls back
+#                              to HEAD's message when that range is empty.
+#                              claude-config#489: the pre-push reviewer used to
+#                              see the diff alone and re-flag tradeoffs the
+#                              author had already explained.
 #   pre-push / default      -> git log -1 --format=%B HEAD
 #   codebase                -> empty (no specific commit context)
-#
-# NOTE: the case statement below still has a `full-diff` label folded into
-# the `*` (default) branch, but in practice full-diff mode never reaches
-# this function — every path through the full-diff block (~line 828) exits
-# before the COMMIT_MSG=$(_read_commit_message) call site (~line 1097). The
-# `*` branch currently serves pre-push and any future post-commit mode that
-# doesn't early-exit.
 _read_commit_message() {
   local msg=""
 
@@ -1541,11 +1748,22 @@ _read_commit_message() {
         | awk 'NF{found=1} found{print}' \
         | awk 'BEGIN{n=0} {lines[n++]=$0} END{end=n-1; while(end>=0 && lines[end]~/^[[:space:]]*$/) end--; for(i=0;i<=end;i++) print lines[i]}') || true
       ;;
+    full-diff)
+      local base_ref=main
+      if git rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
+        base_ref=origin/main
+      fi
+      # One header line per commit so the reviewer can tell messages apart.
+      # Capped: a long branch must not crowd the diff out of the prompt.
+      msg=$(git log --no-merges --format='--- %h%n%B' "${base_ref}..HEAD" 2>/dev/null \
+        | awk -v max=200 'NR<=max {print} NR==max+1 {print "[... further commit messages truncated]"}') || true
+      if [[ -z "${msg//[[:space:]]/}" ]]; then
+        msg=$(git log -1 --format=%B HEAD 2>/dev/null) || true
+      fi
+      ;;
     *)
       # pre-push and any future post-commit mode that doesn't early-exit
-      # before reaching this function. (full-diff is nominally covered by
-      # this branch too, but its early-exit paths never call
-      # _read_commit_message in practice — see the note above.)
+      # before reaching this function.
       msg=$(git log -1 --format=%B HEAD 2>/dev/null \
         | awk 'NF{found=1} found{print}' \
         | awk 'BEGIN{n=0} {lines[n++]=$0} END{end=n-1; while(end>=0 && lines[end]~/^[[:space:]]*$/) end--; for(i=0;i<=end;i++) print lines[i]}')
@@ -2284,6 +2502,11 @@ if [[ -z "${SUBMODULE_ONLY_LINES}" ]]; then
 fi
 unset SUBMODULE_ONLY_LINES
 
+# Every path the reviewed diff touches, for downgrade_unverifiable_findings'
+# location check (#488). The staged index (commit mode) plus the diff's own
+# headers, which are the only source in full-diff mode.
+REVIEWED_PATHS=$(printf '%s\n%s\n' "${CHANGED_FILES}" "$(diff_changed_paths "${DIFF}")" | grep -v '^$' | sort -u || true)
+
 # --- Full-diff mode (pre-push cross-file review) ---
 if [[ "${REVIEW_MODE}" == "full-diff" ]]; then
   log_info "Full-diff review: analyzing complete feature branch diff"
@@ -2304,7 +2527,26 @@ if [[ "${REVIEW_MODE}" == "full-diff" ]]; then
     rm -f "${FULL_DIFF_CACHE}"
   fi
 
-  FULL_DIFF_PROMPT="You are performing a pre-push full-diff review of an entire feature branch.
+  # The branch's commit messages, so the reviewer sees the author's stated
+  # rationale before re-deriving it (#489). Context, not proof: the framing
+  # below keeps a message from excusing a real cross-file defect.
+  FULL_DIFF_INTENT_SECTION=""
+  _fd_msg=$(_read_commit_message)
+  if [[ -n "${_fd_msg}" ]]; then
+    FULL_DIFF_INTENT_SECTION="DEVELOPER INTENT (commit messages on this branch, newest first):
+${_fd_msg}
+---
+Use this as context, not proof. When a message states a tradeoff the author
+deliberately accepted (an outage window, a destroy/recreate, a removed entry
+point), do not re-flag that tradeoff as a defect. A message never makes a real
+cross-file defect acceptable, and its description of what the code does is a
+claim to check against the diff.
+
+"
+  fi
+  unset _fd_msg
+
+  FULL_DIFF_PROMPT="${FULL_DIFF_INTENT_SECTION}You are performing a pre-push full-diff review of an entire feature branch.
 This diff represents ALL changes from main to HEAD — the complete PR surface area.
 
 IMPORTANT: You are being invoked as a focused analysis tool with --no-session-persistence.
@@ -2352,6 +2594,10 @@ ${DIFF}
   FULL_DIFF_OUTPUT=$(invoke_agent "adversarial-reviewer" "${FULL_DIFF_PROMPT}" "${FULL_DIFF_CACHE}" "${ADVERSARIAL_MODEL_ARGS[@]}") || true
 
   [[ -n "${FULL_DIFF_OUTPUT}" ]] || FULL_DIFF_OUTPUT="VERDICT: FAIL (agent error: invoke_agent produced no output)"
+
+  # Before parse_verdict, as on the commit path: a BLOCKING finding the
+  # reviewer could not have verified does not block the push (#455/#555/#488).
+  FULL_DIFF_OUTPUT=$(downgrade_unverifiable_findings "${FULL_DIFF_OUTPUT}" "${REVIEWED_PATHS}")
 
   # FULL_DIFF_OUTPUT keeps the structured sentinel for the gate below;
   # the displayed and logged copy has it stripped.
@@ -2843,6 +3089,14 @@ fi
 CODE_REVIEWER_OUTPUT=$(downgrade_version_unfamiliarity_findings "${CODE_REVIEWER_OUTPUT}")
 if [[ "${ADVERSARIAL_AVAILABLE}" == true ]]; then
   ADVERSARIAL_OUTPUT=$(downgrade_version_unfamiliarity_findings "${ADVERSARIAL_OUTPUT}")
+fi
+
+# Unverifiable-claim downgrade (#455/#555/#488): same placement and contract.
+# Runs before arbitration, so an external-behavior claim never reaches an
+# arbiter that has no more ability to check it than the reviewer did.
+CODE_REVIEWER_OUTPUT=$(downgrade_unverifiable_findings "${CODE_REVIEWER_OUTPUT}" "${REVIEWED_PATHS}")
+if [[ "${ADVERSARIAL_AVAILABLE}" == true ]]; then
+  ADVERSARIAL_OUTPUT=$(downgrade_unverifiable_findings "${ADVERSARIAL_OUTPUT}" "${REVIEWED_PATHS}")
 fi
 
 # The *_OUTPUT vars carry the structured-decision sentinel (claude-config#443)
