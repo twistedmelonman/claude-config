@@ -59,10 +59,15 @@ unset CDPATH
 #
 # STRICT MODE: This script blocks commits when:
 #   - Review finds code quality issues (BLOCKING severity)
-#   - Review times out (incomplete review)
-#   - Agent errors occur (incomplete review)
+#   - A per-file code-reviewer times out or errors on the chunked path
+#     (incomplete review, #451)
 #   - Diff is too large for automated review
 #   - Review output cannot be parsed (unverified result)
+#
+# NOT (yet) when a reviewer times out or errors on the whole-diff commit path
+# or the full-diff pre-push path. Those are let through by the transient-
+# failure policy (#444) and reported as INCOMPLETE, never as a pass. Whether
+# they should block is open on #590.
 #
 # Rationale: Unverified code is unsafe code. If the review cannot complete,
 # we cannot verify the code is safe to commit.
@@ -528,8 +533,12 @@ strip_structured_blocking() {
 #
 # Transient infrastructure failures (timeout, agent error) reach here as
 # synthetic "VERDICT: FAIL (timeout)" prose with no sentinel and no SEVERITY
-# line, so they land in the fallback branch and stay NON-blocking — issues
-# #172 and #199. A timeout must not become a hard block.
+# line, so they land in the fallback branch and do not block here. Callers
+# must then ask is_transient_verdict() before calling the run a pass: a
+# reviewer that never ran has not reviewed anything (#590). Whether a
+# code-reviewer timeout should block the commit is an open policy question
+# (#590); the whole-diff and full-diff paths currently allow it through and
+# report it as INCOMPLETE, while the chunked path blocks it (#451).
 output_blocks() {
   local _decision
   _decision=$(read_structured_blocking "$1")
@@ -538,6 +547,26 @@ output_blocks() {
     false) return 1 ;;
     *) has_blocking_severity "$1" ;;
   esac
+}
+
+# True when reviewer output $1 is one of invoke_agent's synthetic transient
+# verdicts ("VERDICT: FAIL (timeout)", "VERDICT: FAIL (agent error: N)"), or
+# the empty-output stand-in the callers build. Such output means the reviewer
+# did NOT review the diff. Line-anchored, and callers ask output_blocks()
+# FIRST, so a real review that quotes this string in its DETAILS can never be
+# relabelled from blocking to incomplete. The Revise form is covered for
+# #172.
+is_transient_verdict() {
+  printf '%s\n' "$1" | grep -qE '^VERDICT: (FAIL|Revise) \((timeout|agent error)'
+}
+
+# One-word reason for a transient verdict, for the review log.
+transient_reason() {
+  if printf '%s\n' "$1" | grep -qE '^VERDICT: (FAIL|Revise) \(timeout'; then
+    printf 'timeout'
+  else
+    printf 'agent error'
+  fi
 }
 
 # Run the CLI with structured output and normalise the response.
@@ -1609,10 +1638,12 @@ invoke_agent() {
   rm -f "${_agent_err}"
   unset _agent_err
 
-  # Handle timeout - BLOCK commit (strict mode)
+  # Handle timeout. This function does not decide whether that blocks; the
+  # caller does, and each caller reports the outcome itself (#590). Saying
+  # "BLOCKING" here printed a block that the whole-diff path then let through.
   if [[ ${exit_code} -eq 124 ]]; then
     log_error "${agent_name} timed out after ${TIMEOUT_SECONDS}s"
-    log_error "BLOCKING: Review timeout means review did not complete."
+    log_error "Review timeout means the review did not complete."
     log_error ""
     log_error "Options:"
     log_error "  1. Retry the commit (review will run again)"
@@ -1622,7 +1653,7 @@ invoke_agent() {
     return 1
   elif [[ ${exit_code} -ne 0 ]]; then
     log_error "${agent_name} exited with error code ${exit_code}"
-    log_error "BLOCKING: Agent error means review did not complete."
+    log_error "Agent error means the review did not complete."
     log_error ""
     log_error "Options:"
     log_error "  1. Retry the commit (review will run again)"
@@ -2699,6 +2730,16 @@ ${DIFF}
       printf 'full-diff: FAIL (blocking)\n' >>"${REVIEW_LOG}" || true
       log_error "Full-diff review found blocking cross-file issues"
       exit 1
+    elif is_transient_verdict "${FULL_DIFF_OUTPUT}"; then
+      # The only reviewer on this path did not run. The push is still let
+      # through (transient failures are non-blocking, #444), but it is not a
+      # review and must not be logged as "warnings only" (#590). Whether it
+      # should block is an open question on #590.
+      _fd_reason=$(transient_reason "${FULL_DIFF_OUTPUT}")
+      printf 'full-diff: INCOMPLETE (%s)\n' "${_fd_reason}" >>"${REVIEW_LOG}" || true
+      log_warn "Full-diff review INCOMPLETE: adversarial-reviewer did not complete (${_fd_reason}) - this branch was NOT reviewed"
+      log_warn "  Push allowed: transient reviewer failures are non-blocking. Re-run: git config review.timeout 300, then push again"
+      exit 0
     else
       printf 'full-diff: FAIL (warnings only)\n' >>"${REVIEW_LOG}" || true
       log_warn "Full-diff review found warnings (non-blocking)"
@@ -3222,7 +3263,26 @@ if [[ "${ADVERSARIAL_AVAILABLE}" == true ]]; then
   fi
 fi
 
-if [[ -n "${ROUND_HISTORY_FILE}" ]]; then
+# A reviewer that timed out or errored did not review the diff (#590). Its
+# synthetic "VERDICT: FAIL (timeout)" is not a finding: it is kept out of the
+# round history, never reported as a pass, and logged as INCOMPLETE. Asked
+# only after output_blocks(), so a real BLOCKING review is never relabelled.
+CODE_REVIEWER_INCOMPLETE=false
+CODE_REVIEWER_INCOMPLETE_REASON=""
+if [[ "${CODE_REVIEWER_VERDICT}" == "FAIL" ]] \
+  && ! output_blocks "${CODE_REVIEWER_OUTPUT}" \
+  && is_transient_verdict "${CODE_REVIEWER_OUTPUT}"; then
+  CODE_REVIEWER_INCOMPLETE=true
+  CODE_REVIEWER_INCOMPLETE_REASON=$(transient_reason "${CODE_REVIEWER_OUTPUT}")
+fi
+ADVERSARIAL_INCOMPLETE=false
+if [[ "${ADVERSARIAL_VERDICT}" == "FAIL" ]] \
+  && ! output_blocks "${ADVERSARIAL_OUTPUT}" \
+  && is_transient_verdict "${ADVERSARIAL_OUTPUT}"; then
+  ADVERSARIAL_INCOMPLETE=true
+fi
+
+if [[ -n "${ROUND_HISTORY_FILE}" && "${CODE_REVIEWER_INCOMPLETE}" != true ]]; then
   if [[ "${CODE_REVIEWER_VERDICT}" == "PASS" ]]; then
     clear_round_feedback "${ROUND_HISTORY_FILE}"
   else
@@ -3265,9 +3325,21 @@ _FIX_NOW_ENTRIES=$(
 emit_fix_now_entries "${_FIX_NOW_ENTRIES}" || true
 
 # Write verdict summary before exit — EXIT trap appends exit_code
+# A reviewer that did not complete is logged as such, not as FAIL: #590's log
+# read "code-reviewer: FAIL ... exit_code: 0", which says neither what
+# happened nor why the commit went through. The adversarial wording matches
+# the chunked path's.
 {
-  printf 'code-reviewer: %s\n' "${CODE_REVIEWER_VERDICT}"
-  printf 'adversarial-reviewer: %s\n' "${ADVERSARIAL_VERDICT}"
+  if [[ "${CODE_REVIEWER_INCOMPLETE}" == true ]]; then
+    printf 'code-reviewer: INCOMPLETE (%s)\n' "${CODE_REVIEWER_INCOMPLETE_REASON}"
+  else
+    printf 'code-reviewer: %s\n' "${CODE_REVIEWER_VERDICT}"
+  fi
+  if [[ "${ADVERSARIAL_INCOMPLETE}" == true ]]; then
+    printf 'adversarial-reviewer: skipped (timeout or agent error)\n'
+  else
+    printf 'adversarial-reviewer: %s\n' "${ADVERSARIAL_VERDICT}"
+  fi
 } >>"${REVIEW_LOG}" || true
 
 # Determine final result
@@ -3358,6 +3430,11 @@ DETAILS: [explanation and fix]"
       log_error "code-reviewer found blocking issues - commit rejected"
       exit 1
     fi
+  elif [[ "${CODE_REVIEWER_INCOMPLETE}" == true ]]; then
+    # Non-blocking, as transient failures have been since #444, but never
+    # reported as warnings or as a pass (#590).
+    log_warn "code-reviewer did NOT complete (${CODE_REVIEWER_INCOMPLETE_REASON}) - it did NOT review this commit (non-blocking)"
+    log_warn "  Re-run: git config review.timeout 300, then retry the commit"
   else
     log_warn "code-reviewer found warnings (non-blocking)"
     # Continue to adversarial if security-critical
@@ -3370,8 +3447,11 @@ if [[ "${ADVERSARIAL_VERDICT}" == "FAIL" ]]; then
   # consistent with how code-reviewer handles the same case. Also matches a
   # "Revise (...)" form in case a future synthetic transient error is ever
   # phrased that way instead of "FAIL (...)" (#172).
-  if echo "${ADVERSARIAL_DISPLAY}" | grep -qE "VERDICT: (FAIL|Revise) \((timeout|agent error)"; then
-    log_warn "adversarial-reviewer timed out or errored — non-blocking (infrastructure failure)"
+  #
+  # ADVERSARIAL_INCOMPLETE is set only when output_blocks() said no, so a real
+  # BLOCKING review that happens to quote a synthetic verdict still blocks.
+  if [[ "${ADVERSARIAL_INCOMPLETE}" == true ]]; then
+    log_warn "adversarial-reviewer timed out or errored - it did NOT review this commit (non-blocking)"
   elif output_blocks "${ADVERSARIAL_OUTPUT}"; then
     # Symmetric with the code-reviewer gate above: only a BLOCKING severity
     # rejects the commit. A warnings-only FAIL is logged but non-blocking.
@@ -3395,8 +3475,19 @@ if [[ "${ADVERSARIAL_VERDICT}" != "PASS" && "${ADVERSARIAL_VERDICT}" != "FAIL" &
   exit 1
 fi
 
-# All checks passed
-if [[ "${ADVERSARIAL_VERDICT}" != "N/A" ]]; then
+# Nothing blocked. Say "passed" only for a reviewer that actually reviewed the
+# commit (#590): a timeout used to print "BLOCKING", then "Review passed".
+# The adversarial wording matches the chunked path's "code-reviewer only".
+if [[ "${CODE_REVIEWER_INCOMPLETE}" == true ]]; then
+  if [[ "${ADVERSARIAL_VERDICT}" == "N/A" || "${ADVERSARIAL_INCOMPLETE}" == true ]]; then
+    log_warn "Review INCOMPLETE: no reviewer completed - this commit was NOT reviewed (allowed: transient failures are non-blocking)"
+  else
+    log_warn "Review INCOMPLETE: code-reviewer did not complete; adversarial-reviewer only - commit allowed (transient failures are non-blocking)"
+  fi
+  printf 'review: INCOMPLETE (code-reviewer did not complete)\n' >>"${REVIEW_LOG}" || true
+elif [[ "${ADVERSARIAL_INCOMPLETE}" == true ]]; then
+  log_success "Review passed (code-reviewer only; adversarial-reviewer did not complete)"
+elif [[ "${ADVERSARIAL_VERDICT}" != "N/A" ]]; then
   log_success "Review passed (code-reviewer + adversarial-reviewer)"
 else
   log_success "Review passed (code-reviewer)"

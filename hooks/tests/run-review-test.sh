@@ -2691,6 +2691,15 @@ assert_eq \
   "0" \
   "${exit_t45}"
 
+# Not blocking is not the same as passing (#590): the log must say the
+# reviewer did not complete, not "code-reviewer: FAIL" beside exit_code 0.
+log_content45=""
+[[ -f "${TEST45_LOG}" ]] && log_content45=$(<"${TEST45_LOG}")
+assert_contains \
+  "timeout is logged as INCOMPLETE, not as a verdict (issue #590)" \
+  "code-reviewer: INCOMPLETE (timeout)" \
+  "${log_content45}"
+
 # =========================================================
 # TEST 46: a non-JSON response degrades to the prose path.
 #
