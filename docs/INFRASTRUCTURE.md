@@ -197,7 +197,12 @@ The global `~/.claude/last-review-result.log` is a pointer file with a `log:` fi
 
 ### Review Timeouts
 
-If review times out:
+What a timeout (or agent error) does depends on the path:
+
+- Chunked commit review: a file whose code-reviewer pass timed out is unreviewed, and the commit is blocked as INCOMPLETE.
+- Whole-diff commit review and full-diff pre-push review: the commit or push is let through, and the hook says `Review INCOMPLETE` / `Full-diff review INCOMPLETE`. The log records `code-reviewer: INCOMPLETE (timeout)`, `adversarial-reviewer: skipped (timeout or agent error)`, or `full-diff: INCOMPLETE (timeout)`. That commit was not reviewed. Whether these paths should block is open on #590.
+
+To get a real review:
 
 - Retry the commit (transient failures happen)
 - Increase timeout: `git config review.timeout 300`

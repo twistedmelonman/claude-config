@@ -661,6 +661,20 @@ assert_eq \
   "0" \
   "${exit_t8}"
 
+# Not blocking is not passing (#590): the log says the reviewer did not
+# complete. run-review.sh always writes REVIEW_LOG (its EXIT trap appends
+# exit_code), so a missing log is itself a failure, asserted first so it is
+# reported as such rather than as a missing INCOMPLETE line.
+t8_log_exists=no
+[[ -f "${TEST8_LOG}" ]] && t8_log_exists=yes
+assert_eq "review log is written for empty reviewer output" "yes" "${t8_log_exists}"
+log_content8=""
+[[ "${t8_log_exists}" == yes ]] && log_content8=$(<"${TEST8_LOG}")
+assert_contains \
+  "empty reviewer output is logged as INCOMPLETE (issue #590)" \
+  "code-reviewer: INCOMPLETE (agent error)" \
+  "${log_content8}"
+
 # =========================================================
 # TEST 9: Chunked-mode timeout verdicts are counted as skips, not warnings —
 # and an all-timeout batch is fail-closed (issue #200)
@@ -2690,6 +2704,15 @@ assert_eq \
   "timeout with zero bytes does not become a hard block (issue #172)" \
   "0" \
   "${exit_t45}"
+
+# Not blocking is not the same as passing (#590): the log must say the
+# reviewer did not complete, not "code-reviewer: FAIL" beside exit_code 0.
+log_content45=""
+[[ -f "${TEST45_LOG}" ]] && log_content45=$(<"${TEST45_LOG}")
+assert_contains \
+  "timeout is logged as INCOMPLETE, not as a verdict (issue #590)" \
+  "code-reviewer: INCOMPLETE (timeout)" \
+  "${log_content45}"
 
 # =========================================================
 # TEST 46: a non-JSON response degrades to the prose path.
