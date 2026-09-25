@@ -87,6 +87,8 @@ _write_big_file() {
 # the directory change cannot leak into the parent bats process, and uses
 # `return 1` rather than `exit 1` so one broken test does not tear down the
 # whole suite. Same pattern as tests/test_run_review_message_file.bats.
+# GIT_CONFIG_GLOBAL=/dev/null keeps the developer's own `review.*` keys (for
+# example a raised skipThreshold) from leaking in and changing the routing.
 _run_review() {
   local diff
   diff=$(git -C "${TMPDIR_TEST}" diff --cached)
@@ -94,7 +96,7 @@ _run_review() {
     cd "${TMPDIR_TEST}" || return 1
     printf '%s\n' "${diff}" \
       | REVIEW_LOG="${EXPECTED_LOG}" CLAUDE_CLI="${CLAUDE_CLI}" \
-        bash "${SCRIPT}" "$@"
+        GIT_CONFIG_GLOBAL=/dev/null bash "${SCRIPT}" "$@"
   )
 }
 
@@ -183,4 +185,76 @@ _run_review() {
   [ "$status" -ne 0 ]
   [[ "$output" != *"Lockfile-only changes detected"* ]]
   grep -q 'blocked: diff too large' "${EXPECTED_LOG}"
+}
+
+# --- Artifact-only skip (claude-config#481) ---------------------------------
+#
+# Data artifacts (scan logs, TSV/CSV exports) are not code. Before #481 a
+# commit of 42 scan logs hit the size gate, got split six ways, and each piece
+# was AI-reviewed as if it were code. These cases pin the exemption, its
+# all-or-nothing guard, and both per-repo overrides Andrew asked for.
+
+@test "artifact-only diff (log + tsv) skips review and says so in the log" {
+  mkdir -p "${TMPDIR_TEST}/docs/scan"
+  _write_big_file "docs/scan/shellcheck.log"
+  _write_big_file "summary.tsv" 200
+  git -C "${TMPDIR_TEST}" add docs/scan/shellcheck.log summary.tsv
+
+  run _run_review
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Artifact-only changes detected"* ]]
+  grep -q 'skipped: artifact-only' "${EXPECTED_LOG}"
+  [ ! -f "${AGENT_INVOKED}" ]
+}
+
+@test "files under a docs scan/ directory count as artifacts whatever their extension" {
+  mkdir -p "${TMPDIR_TEST}/docs/2026-09/scan"
+  echo "raw scanner output" >"${TMPDIR_TEST}/docs/2026-09/scan/semgrep.json"
+  git -C "${TMPDIR_TEST}" add docs/2026-09/scan/semgrep.json
+
+  run _run_review
+  [ "$status" -eq 0 ]
+  grep -q 'skipped: artifact-only' "${EXPECTED_LOG}"
+}
+
+@test "artifacts mixed with one shell script are still reviewed" {
+  _write_big_file "run.log" 200
+  printf '#!/usr/bin/env bash\nrm -rf "$1"\n' >"${TMPDIR_TEST}/cleanup.sh"
+  git -C "${TMPDIR_TEST}" add run.log cleanup.sh
+
+  run _run_review
+  [ "$status" -ne 0 ]
+  [[ "$output" != *"Artifact-only changes detected"* ]]
+  ! grep -q 'skipped: artifact-only' "${EXPECTED_LOG}"
+  [ -f "${AGENT_INVOKED}" ]
+}
+
+@test "review.artifactSkip=false in the repo turns the skip off" {
+  _write_big_file "data.csv" 200
+  git -C "${TMPDIR_TEST}" add data.csv
+  git -C "${TMPDIR_TEST}" config review.artifactSkip false
+
+  run _run_review
+  [ "$status" -ne 0 ]
+  ! grep -q 'skipped: artifact-only' "${EXPECTED_LOG}"
+  [ -f "${AGENT_INVOKED}" ]
+}
+
+@test "review.artifactPatterns replaces the default list (drop csv, keep log)" {
+  git -C "${TMPDIR_TEST}" config review.artifactPatterns '*.log'
+
+  _write_big_file "data.csv" 200
+  git -C "${TMPDIR_TEST}" add data.csv
+  run _run_review
+  [ "$status" -ne 0 ]
+  ! grep -q 'skipped: artifact-only' "${EXPECTED_LOG}"
+
+  git -C "${TMPDIR_TEST}" rm -q --cached data.csv
+  rm -f "${AGENT_INVOKED}"
+  _write_big_file "build.log" 200
+  git -C "${TMPDIR_TEST}" add build.log
+  run _run_review
+  [ "$status" -eq 0 ]
+  grep -q 'skipped: artifact-only' "${EXPECTED_LOG}"
+  [ ! -f "${AGENT_INVOKED}" ]
 }
