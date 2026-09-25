@@ -260,6 +260,15 @@ run_audit() {
   [[ "${output}" == *"bot=1"* ]]
 }
 
+@test "known-bad: a non-Dependabot bot merge with no lock is NO_LOCK, not exempt" {
+  repos acme acme/widgets
+  pulls acme/widgets 1 "[$(pr 9 "${MERGED}" 'claude[bot]')]"
+  ledger "${START}"
+  run_audit
+  [ "${status}" -eq 1 ]
+  [[ "${output}" == *$'NO_LOCK\tacme/widgets#9'* ]]
+}
+
 @test "merges before --since and unmerged closed PRs are ignored" {
   repos acme acme/widgets
   local closed

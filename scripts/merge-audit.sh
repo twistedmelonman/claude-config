@@ -38,8 +38,9 @@
 #                  time.
 #   UNCLASSIFIED   Merged before the ledger started. The ledger cannot speak
 #                  to that time, so this is NOT a clean result.
-#   BOT            Bot-authored (e.g. Dependabot) with no lock. Auto-merge is
-#                  policy for these; listed only with --all.
+#   BOT            Authored by dependabot[bot], with no lock. Auto-merge is
+#                  policy for Dependabot only; listed only with --all. Any
+#                  other bot (claude[bot], for one) gets no exemption.
 #
 # Exit status: 0 only when every non-bot merge is LOCKED; 1 when anything is
 # NO_LOCK, LOCK_NOT_LIVE or UNCLASSIFIED (an unknown is not a pass); 2 on a
@@ -188,7 +189,7 @@ classify() {
     echo LOCK_NOT_LIVE
     return
   fi
-  if [[ "${author}" == *"[bot]" || "${author}" == app/* ]]; then
+  if [[ "${author}" == "dependabot[bot]" ]]; then
     echo BOT
     return
   fi
