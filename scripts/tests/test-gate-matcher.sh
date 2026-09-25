@@ -259,6 +259,15 @@ _case "${PERSONIFY}" "continued gh pr review: --body on the next line" \
 _case "${PERSONIFY}" "continued gh issue comment: --body on the next line" \
   "$(_b64 'gh issue comment 5 \
   --body x')" 2
+_case "${PERSONIFY}" "continued gh pr comment: --body on the next line" \
+  "$(_b64 'gh pr comment 5 \
+  --body x')" 2
+_case "${PERSONIFY}" "continued gh issue create: --body on the next line" \
+  "$(_b64 'gh issue create --title t \
+  --body x')" 2
+_case "${PERSONIFY}" "continued gh issue edit: --body-file unapproved on the next line" \
+  "$(_b64 "gh issue edit 5 \\
+  --body-file ${UNAPPROVED_TEXT}")" 2
 _case "${PERSONIFY}" "continued gh pr edit: --body-file unapproved on the next line" \
   "$(_b64 "gh pr edit 5 \\
   --body-file ${UNAPPROVED_TEXT}")" 2
@@ -304,11 +313,17 @@ _case "${PERSONIFY}" "plain newline: unapproved commit, then approved commit" \
   "$(_b64 "git commit -F ${UNAPPROVED_TEXT}
 git commit -F ${APPROVED_TEXT}")" 2
 # Verbs need command position, and quoted or heredoc prose is not joined.
+# The verb sits right after the quote on purpose: an opening quote counts as
+# command position, and the one-line form `echo 'gh pr create --title t
+# --body x'` blocks. So these two pass only because the scanner kept the
+# newline, not because the matcher missed the verb.
+_case "${PERSONIFY}" "control: one-line single-quoted verb and body blocks" \
+  "$(_b64 "echo 'gh pr create --title t --body x'")" 2
 _case "${PERSONIFY}" "prose: continuation inside single quotes is not joined" \
-  "$(_b64 "echo 'run gh pr create --title t \\
+  "$(_b64 "echo 'gh pr create --title t \\
 --body x'")" 0
 _case "${PERSONIFY}" "prose: continuation inside \$'...' is not joined" \
-  "$(_b64 "echo \$'run gh pr create --title t \\
+  "$(_b64 "echo \$'gh pr create --title t \\
 --body x'")" 0
 _case "${PERSONIFY}" "here-string <<< opens no heredoc" \
   "$(_b64 "cat <<< EOF

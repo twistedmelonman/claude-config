@@ -96,7 +96,9 @@ _optval="(\"[^\"]*\"[[:space:]]+|'[^']*'[[:space:]]+|[^-][^|;&${bt}[:space:]]*[[
 # next line, up to a line that is exactly WORD (leading tabs removed for
 # `<<-`). Several on one line are read in order. Same caveat as below: a
 # character scanner, not a parser, so `$(...)` nesting and the like are
-# approximated.
+# approximated. One known miss: a shift inside arithmetic (`$((1<<2))`) reads
+# as a heredoc operator, and no line ever closes it, so continuations after
+# that line are not joined.
 _join_continuations() {
   awk '
     function flush() { print buf; buf = "" }
