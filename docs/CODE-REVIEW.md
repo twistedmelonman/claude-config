@@ -206,15 +206,34 @@ changes such a finding from BLOCKING to WARNING. It runs on both commit-time
 reviewers before arbitration, and on the full-diff reviewer. It uses the same
 promotion and sentinel rules as the version-pin downgrade above.
 
-- The external-behavior check matches narrow wording: "undocumented", "does
-  not support ... syntax", "will be sent literally", or "placeholder syntax
-  is invalid". It does not fire when the finding also names a security or
-  data-loss class, such as a hardcoded credential, an injection, `eval`,
-  `rm -rf`, or a CVE.
-- The location check fires only when LOCATION contains a path and none of
-  its paths matches a file in the diff. The script reads the diff headers
-  with any prefix style, so `diff.mnemonicPrefix` does not affect the match.
-  An `unspecified` or empty LOCATION is never downgraded.
+This check weakens a gate, so each rule errs toward blocking. A false block
+costs one command. A false pass ships the defect.
+
+- **Security exemption.** Neither check fires when the finding names a
+  security or data-loss class: a token, a secret, a credential, auth,
+  logging, an injection, `eval`, `rm -rf`, or a CVE. This applies to the
+  location check too, so the literal #488 finding (a leaked token in a file
+  that never existed) still blocks. The arbiter stays its backstop.
+- **External behavior.** A named third-party platform must be the subject of
+  the negative claim, for example "Netlify Forms does not support this
+  syntax" or "macOS BSD sed does not support POSIX bracket expressions".
+  "The new parser does not support that flag" names no platform, so it still
+  blocks.
+- **Location.** The check fires only when LOCATION holds a file name with an
+  extension and nothing uncertain. A glob, a directory, or an extensionless
+  path is uncertain. The check never fires when the finding mentions a
+  changed file or its basename anywhere, which covers `#L120` anchors,
+  backslash paths, and names with spaces or non-ASCII characters. It also
+  never fires when the finding says the change should have edited a file,
+  for example "settings.json has no entry for the new hook", because such a
+  file is outside the diff by definition. The script reads the diff headers
+  with any prefix style and decodes git's quoted paths.
+- **Block boundaries.** A finding starts at any `ISSUE:` line, also after a
+  number, a bullet, or markdown emphasis. A block with two `SEVERITY:` lines
+  is never downgraded.
+- **Survivors.** The verdict is promoted only when `has_blocking_severity`
+  finds no BLOCKING left. That function strips markdown, so a
+  `**SEVERITY:** BLOCKING` finding keeps the verdict at FAIL.
 - Each downgrade adds a `downgraded:` line to `REVIEW_LOG`, so you can
   measure the rate.
 

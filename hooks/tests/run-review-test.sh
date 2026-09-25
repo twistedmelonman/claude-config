@@ -54,7 +54,8 @@
 #       mock was green while the gate would have hard-blocked every commit
 #   59-61. A BLOCKING finding the reviewer could not have verified does not
 #       block: a LOCATION outside the diff (#488) or an external-behavior claim
-#       (#455/#555); the same finding located in the diff still blocks
+#       (#455/#555); the same finding located in the diff still blocks, and a
+#       security finding outside the diff still blocks (60b)
 #   62-63. Full-diff mode puts the branch commit messages in the prompt (#489)
 
 set -euo pipefail
@@ -3427,15 +3428,17 @@ echo "=== Test 59-60: LOCATION outside the diff does not block (#488) ==="
 
 _t59_run() {
   local loc="$1" label="$2"
+  local issue="${3:-off-by-one in the tally loop}"
+  local details="${4:-The loop skips the last element.}"
   _t59_rc=0
   setup_repo
   stage_small_change
   make_mock_claude "${TMPDIR_TEST}/mock${label}" 0 "VERDICT: FAIL
 
-ISSUE: Hardcoded GitHub API token and unsafe rm with eval
+ISSUE: ${issue}
 SEVERITY: BLOCKING
 LOCATION: ${loc}
-DETAILS: A token is embedded and eval runs rm on untrusted input."
+DETAILS: ${details}"
   rm -f "${TMPDIR_TEST}/test${label}-review.log"
   cd "${REPO_DIR}"
   REVIEW_LOG="${TMPDIR_TEST}/test${label}-review.log" CLAUDE_CLI="${TMPDIR_TEST}/mock${label}/claude" \
@@ -3455,6 +3458,14 @@ assert_contains \
 _t59_run "foo.sh:2" 60 >/dev/null
 exit_t60="${_t59_rc}"
 assert_eq "#488 control: the same finding located in the diff still blocks" "1" "${exit_t60}"
+
+# #488's literal finding (a leaked token plus eval, against tally.sh) is a
+# security class, so the location check must NOT downgrade it: a reviewer
+# cannot launder a credential finding into a warning by misplacing it.
+_t59_run "tally.sh:14" 60b "Hardcoded GitHub API token and unsafe rm with eval" \
+  "A token is embedded and eval runs rm on untrusted input." >/dev/null
+exit_t60b="${_t59_rc}"
+assert_eq "#488: a security finding outside the diff still blocks" "1" "${exit_t60b}"
 
 # =========================================================
 # TEST 61: an external-behavior claim does not block end to end (#455/#555).
