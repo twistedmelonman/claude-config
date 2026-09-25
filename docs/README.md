@@ -37,7 +37,7 @@ Location: `~/.claude/docs/PHILOSOPHY.md` (140 lines)
 - Core Beliefs (Incremental progress, learning before implementing)
 - Epistemic Discipline (Predictions pay rent, notice confusion)
 - Simplicity principles
-- Chesterton's Fence
+- Know the reason before you change it
 - Application guidelines (when and how to apply philosophy)
 
 **Read when:**

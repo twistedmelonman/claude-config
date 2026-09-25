@@ -122,3 +122,42 @@ run_install() {
   [[ -L "${DEPLOY}/scripts/removed.sh" ]]
   [[ -d "${DEPLOY}/skills/removed-skill" ]]
 }
+
+# --- #439: --repair must not call a broken tree "healthy" ---------------------
+#
+# --repair printed "All symlinks healthy — nothing to repair" while a tracked
+# file had no link at all (a missing hook link silently disables that hook),
+# and it printed it before the prune step had looked for stale links.
+
+@test "#439: repair names a tracked file with no link and does not say healthy" {
+  # Fresh DEPLOY: no tracked file has a link yet.
+  run run_install --repair
+  [ "${status}" -eq 0 ]
+  [[ "${output}" != *"All symlinks healthy"* ]]
+  [[ "${output}" == *"Missing symlink: ${DEPLOY}/hooks/run-review.sh"* ]]
+  [[ "${output}" == *"NOT healthy"* ]]
+  # --repair still creates no links; --sync does.
+  [[ ! -e "${DEPLOY}/hooks/run-review.sh" ]]
+}
+
+@test "#439: repair does not say healthy when it pruned a stale link" {
+  run run_install --sync
+  [ "${status}" -eq 0 ]
+  ln -s "${FAKE_REPO}/scripts/gone.sh" "${DEPLOY}/scripts/gone.sh"
+
+  run run_install --repair
+  [ "${status}" -eq 0 ]
+  [[ "${output}" != *"All symlinks healthy"* ]]
+  [[ "${output}" == *"1 stale link(s) pruned"* ]]
+  [[ ! -L "${DEPLOY}/scripts/gone.sh" ]]
+}
+
+@test "#439: repair says healthy only when every tracked file is linked and nothing is stale" {
+  run run_install --sync
+  [ "${status}" -eq 0 ]
+
+  run run_install --repair
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *"All symlinks healthy"* ]]
+  [[ "${output}" != *"Missing symlink"* ]]
+}
