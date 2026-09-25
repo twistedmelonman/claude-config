@@ -503,6 +503,16 @@ cat >"${STUB_BIN}/open" <<'STUB'
 #!/usr/bin/env bash
 f="${*: -1}"
 printf '%s\n' "${f}" >>"${OPENED_LOG}"
+# What the reviewer was shown, before any simulated edit.
+cp "${f}" "${OPENED_LOG}.shown"
+# A simulated body edit by the reviewer.
+if [[ -n "${STUB_EDIT:-}" ]]; then
+  sed -i.bak "s/staged from/${STUB_EDIT} from/" "${f}" && rm -f "${f}.bak"
+fi
+# A forged batch id, standing in for a buffer from another run.
+if [[ -n "${STUB_NONCE:-}" ]]; then
+  sed -i.bak "s/^# BATCH: .*/# BATCH: ${STUB_NONCE}/" "${f}" && rm -f "${f}.bak"
+fi
 sed -i.bak "s/^# STATUS: PENDING/# STATUS: ${STUB_STATUS}/" "${f}" && rm -f "${f}.bak"
 # A second save, later: the reviewer fixing a word the poll did not accept.
 # The redirect is load-bearing: without it the background child holds the
@@ -513,18 +523,21 @@ if [[ -n "${STUB_STATUS_LATER:-}" ]]; then
 fi
 STUB
 chmod +x "${STUB_BIN}"/*
+# Computed once, so no subshell below reads a PATH another one modified.
+STUB_PATH="${STUB_BIN}:${PATH}"
 
 _mkrepo() {
   mkdir -p "$1"
   command git -C "$1" init -q -b "$2"
 }
 
-# Run one open from $1 with one staged item; print the path it opened.
+# Run one open from $1 with one staged item; print the path it opened. $2,
+# when given, is the staged text instead of the default.
 _open_from() {
   local rc=0
   : >"${OPENED_LOG}"
-  printf 'fix(x): staged from %s\n' "$1" >"${PENDING}/item"
-  (cd "$1" && PATH="${STUB_BIN}:${PATH}" && _cmd_open) >"${OPEN_OUT:-/dev/null}" 2>&1 || rc=$?
+  printf '%s\n' "${2:-fix(x): staged from $1}" >"${PENDING}/item"
+  (cd "$1" && PATH="${STUB_PATH}" && _cmd_open) >"${OPEN_OUT:-/dev/null}" 2>&1 || rc=$?
   cat "${OPENED_LOG}"
   return "${rc}"
 }
@@ -598,10 +611,10 @@ if [[ "${rc5}" != 0 ]] && ! compgen -G "${APPROVED}/*" >/dev/null; then
 else
   _no "ABORT approves nothing and wipes approved/"
 fi
-if [[ -n "${P5}" && ! -e "${P5}" ]]; then
-  _ok "an aborted batch's file is removed"
+if [[ -n "${P5}" && -e "${P5}" ]]; then
+  _ok "an aborted batch's file is kept"
 else
-  _no "an aborted batch's file is removed (got '${P5}')"
+  _no "an aborted batch's file is kept (got '${P5}')"
 fi
 STUB_STATUS=APPROVED
 
@@ -620,6 +633,9 @@ if [[ ! -e "${APPROVED}/item" ]]; then
 else
   _no "the refused foreign buffer approves nothing"
 fi
+# A fixture, not a reviewer's buffer: leaving it would make the next alpha open
+# carry it forward.
+rm -f "${FOREIGN}"
 
 # --- near-miss status words (claude-config#559) -----------------------------
 
@@ -728,6 +744,154 @@ fi
 unset STUB_STATUS_LATER OPEN_OUT
 STUB_STATUS=APPROVED
 POLL_TIMEOUT=6
+
+# --- edits survive every exit path of open ----------------------------------
+
+SHOWN="${OPENED_LOG}.shown"
+export OPEN_OUT="${OUT}"
+_alpha_buffers() {
+  compgen -G "${GATE_REVIEW_DIR}/batches/alpha-main-*.txt" || true
+}
+_reset_alpha() {
+  rm -f "${APPROVED:?}"/* "${PENDING:?}"/* "${GATE_REVIEW_DIR}"/batches/alpha-main-*.txt
+}
+
+# (a) ABORT after an edit: the edited text stays on disk, and the next open
+# shows it rather than the staged original.
+_reset_alpha
+STUB_STATUS=ABORT
+export STUB_EDIT=EDIT-ABORT
+PA="$(_open_from "${TMP}/repos/alpha")" || true
+unset STUB_EDIT
+if [[ -n "${PA}" && -f "${PA}" ]] && grep -q 'EDIT-ABORT from' "${PA}"; then
+  _ok "edits: ABORT keeps the edited buffer on disk"
+else
+  _no "edits: ABORT keeps the edited buffer on disk (got '${PA}')"
+fi
+if grep -q "kept at ${PA}" "${OUT}"; then
+  _ok "edits: ABORT says where the edited text is"
+else
+  _no "edits: ABORT says where the edited text is"
+fi
+STUB_STATUS=APPROVED
+PA2="$(_open_from "${TMP}/repos/alpha")" || true
+if grep -q 'EDIT-ABORT from' "${SHOWN}" && ! grep -q '^fix(x): staged from' "${SHOWN}"; then
+  _ok "edits: the open after ABORT shows the edited text, not the original"
+else
+  _no "edits: the open after ABORT shows the edited text, not the original"
+fi
+if grep -q '^# STATUS: PENDING$' "${SHOWN}" && grep -q 'EDIT-ABORT from' "${APPROVED}/item" 2>/dev/null; then
+  _ok "edits: the carried buffer starts PENDING and approves the edited text"
+else
+  _no "edits: the carried buffer starts PENDING and approves the edited text"
+fi
+if [[ ! -e "${PA}" && ! -e "${PA2}" ]]; then
+  _ok "edits: once approved, neither buffer is left behind"
+else
+  _no "edits: once approved, neither buffer is left behind"
+fi
+
+# (b) An edit, then a PENDING timeout: same.
+_reset_alpha
+STUB_STATUS=PENDING
+POLL_TIMEOUT=4
+export STUB_EDIT=EDIT-TIMEOUT
+PB="$(_open_from "${TMP}/repos/alpha")" || true
+unset STUB_EDIT
+STUB_STATUS=APPROVED
+POLL_TIMEOUT=6
+_open_from "${TMP}/repos/alpha" >/dev/null || true
+if grep -q 'EDIT-TIMEOUT from' "${SHOWN}" && grep -q 'EDIT-TIMEOUT from' "${APPROVED}/item" 2>/dev/null &&
+  [[ ! -e "${PB}" ]]; then
+  _ok "edits: after a PENDING timeout the next open shows and approves the edited text"
+else
+  _no "edits: after a PENDING timeout the next open shows and approves the edited text"
+fi
+
+# (c) An edit, an unrecognized word, then the process is killed.
+_reset_alpha
+: >"${OPENED_LOG}"
+printf 'fix(x): staged from %s\n' "${TMP}/repos/alpha" >"${PENDING}/item"
+# Prefix assignments, not exports: the stub reads them from the environment,
+# and nothing leaks into the rest of this file.
+(cd "${TMP}/repos/alpha" && STUB_STATUS=XYZZY STUB_EDIT=EDIT-KILLED POLL_TIMEOUT=60 \
+  PATH="${STUB_PATH}" _cmd_open) >"${OUT}" 2>&1 &
+killpid=$!
+sleep 3
+kill -TERM "${killpid}" 2>/dev/null || true
+rck=0
+wait "${killpid}" || rck=$?
+PC="$(cat "${OPENED_LOG}")"
+if [[ "${rck}" != 0 && -n "${PC}" && -f "${PC}" ]] && grep -q 'EDIT-KILLED from' "${PC}" &&
+  grep -q "kept at ${PC}" "${OUT}"; then
+  _ok "edits: a killed open keeps the edited buffer and says where"
+else
+  _no "edits: a killed open keeps the edited buffer and says where (rc ${rck})"
+fi
+STUB_STATUS=APPROVED
+_open_from "${TMP}/repos/alpha" >/dev/null || true
+if grep -q 'EDIT-KILLED from' "${SHOWN}" && grep -q 'EDIT-KILLED from' "${APPROVED}/item" 2>/dev/null; then
+  _ok "edits: the open after a kill shows and approves the edited text"
+else
+  _no "edits: the open after a kill shows and approves the edited text"
+fi
+
+# (d) A carried buffer is re-stamped. A save carrying the OLD run's id is
+# refused by the new run, and the refusal keeps the text.
+_reset_alpha
+STUB_STATUS=ABORT
+export STUB_EDIT=EDIT-NONCE
+PD="$(_open_from "${TMP}/repos/alpha")" || true
+unset STUB_EDIT
+old_nonce="$(sed -n 's/^# BATCH: //p' "${PD}")"
+STUB_STATUS=APPROVED
+export STUB_NONCE="${old_nonce}"
+rcd=0
+PD2="$(_open_from "${TMP}/repos/alpha")" || rcd=$?
+unset STUB_NONCE
+new_nonce="$(sed -n 's/^# BATCH: //p' "${SHOWN}")"
+if [[ -n "${old_nonce}" && -n "${new_nonce}" && "${new_nonce}" != "${old_nonce}" ]] &&
+  grep -q 'EDIT-NONCE from' "${SHOWN}"; then
+  _ok "edits: a carried buffer gets the new run's batch id"
+else
+  _no "edits: a carried buffer gets the new run's batch id (old '${old_nonce}', new '${new_nonce}')"
+fi
+if [[ "${rcd}" != 0 ]] && ! compgen -G "${APPROVED}/*" >/dev/null &&
+  [[ -f "${PD2}" ]] && grep -q 'EDIT-NONCE from' "${PD2}" && grep -q "kept at ${PD2}" "${OUT}"; then
+  _ok "edits: the old batch id cannot approve the carried buffer, and the text is kept"
+else
+  _no "edits: the old batch id cannot approve the carried buffer, and the text is kept (rc ${rcd})"
+fi
+
+# Restaged since the edit: the new staged text is the item, and the earlier
+# edit is quoted in the header, where it is shown but never approved.
+_reset_alpha
+STUB_STATUS=ABORT
+export STUB_EDIT=EDIT-RESTAGE
+_open_from "${TMP}/repos/alpha" >/dev/null || true
+unset STUB_EDIT
+STUB_STATUS=APPROVED
+_open_from "${TMP}/repos/alpha" 'fix(x): restaged text' >/dev/null || true
+if grep -q '^# | fix(x): EDIT-RESTAGE from' "${SHOWN}" && grep -q '^fix(x): restaged text$' "${SHOWN}" &&
+  [[ "$(cat "${APPROVED}/item" 2>/dev/null)" == 'fix(x): restaged text' ]]; then
+  _ok "edits: a restaged item shows both texts and approves only the item body"
+else
+  _no "edits: a restaged item shows both texts and approves only the item body"
+fi
+
+# (e) APPROVED with no prior buffer is unchanged: staged bytes approved, the
+# buffer removed.
+_reset_alpha
+printf 'fix(x): staged from %s\n' "${TMP}/repos/alpha" >"${TMP}/want"
+PE="$(_open_from "${TMP}/repos/alpha")" || true
+want_hash="$(_hash "${TMP}/want")"
+got_hash="$(_hash "${APPROVED}/item" 2>/dev/null)" || got_hash=""
+if [[ -f "${APPROVED}/item" && -n "${PE}" && ! -e "${PE}" && "${got_hash}" == "${want_hash}" ]]; then
+  _ok "edits: a plain APPROVED open approves the staged bytes and removes its buffer"
+else
+  _no "edits: a plain APPROVED open approves the staged bytes and removes its buffer"
+fi
+unset OPEN_OUT
 
 echo "--- ${pass} passed, ${fail} failed"
 [[ "${fail}" == "0" ]]
