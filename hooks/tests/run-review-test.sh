@@ -45,8 +45,8 @@
 #       schema-constrained boolean decides, with #442's prose matcher as the
 #       fallback when the reviewer did not answer one. Test 42 is the fail-open
 #       guard — an absent structured_output must NOT read as "no blocking
-#       issues"; 43/44 reject null and the string "false"; 45 keeps a timeout
-#       non-blocking (#172); 46 degrades to prose for an older CLI; 47 keeps
+#       issues"; 43/44 reject null and the string "false"; 45: a timeout is
+#       not a finding, but it blocks as INCOMPLETE (#590); 46 degrades to prose for an older CLI; 47 keeps
 #       the transport marker out of human-facing output
 #   48. The real CLI's tool-call response shape: .result is the SERIALIZED
 #       object with no prose in it, so the VERDICT block is rendered out of
@@ -308,17 +308,18 @@ assert_contains \
   "agent error" \
   "${log_content}"
 
-# Transient agent failure (both reviewers error) must not block the commit.
-# Both produce VERDICT: FAIL (agent error: 1) with no SEVERITY: BLOCKING —
-# they should be treated as non-blocking warnings, not genuine rejections.
+# Both reviewers erroring means nothing reviewed the commit. On the whole-diff
+# path a code-reviewer that did not complete blocks the commit (issue #590),
+# as the chunked path already does (#451). It is not a finding, so nothing is
+# filed, but the commit does not go through unreviewed.
 exit_t1=0
 cd "${REPO_DIR}"
 REVIEW_LOG="${TEST1_LOG}" CLAUDE_CLI="${MOCK1_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || exit_t1=$?
 cd - >/dev/null
 
 assert_eq \
-  "transient agent failure (both reviewers error) does not block commit" \
-  "0" \
+  "agent failure (both reviewers error) blocks the commit (issue #590)" \
+  "1" \
   "${exit_t1}"
 
 # =========================================================
@@ -621,17 +622,16 @@ assert_contains \
   "${isolated_log_content}"
 
 # =========================================================
-# TEST 8: Empty reviewer output (exit 0) does not block commit
+# TEST 8: Empty reviewer output (exit 0) blocks the commit as INCOMPLETE
 #
 # If invoke_agent exits 0 but produces no stdout, CODE_REVIEWER_OUTPUT="".
-# Both PASS and FAIL greps fail, falling to "Could not parse verdict" -> exit 1.
-# Fix: add empty-output guard after || true:
+# The empty-output guard after || true synthesises an agent-error verdict:
 #   [[ -n "${CODE_REVIEWER_OUTPUT}" ]] || CODE_REVIEWER_OUTPUT="VERDICT: FAIL (agent error: ...)"
-# This synthesises a transient-error verdict that the existing non-blocking check
-# handles correctly, resulting in exit 0.
+# so it is reported as "did not complete", not as "Could not parse verdict".
+# A code-reviewer that did not complete blocks the whole-diff commit (#590).
 # =========================================================
 echo ""
-echo "=== Test 8: empty reviewer output (exit 0) does not block commit ==="
+echo "=== Test 8: empty reviewer output (exit 0) blocks the commit as INCOMPLETE ==="
 
 setup_repo
 stage_small_change
@@ -657,12 +657,11 @@ REVIEW_LOG="${TEST8_LOG}" CLAUDE_CLI="${MOCK8_DIR}/claude" bash "${SUBJECT}" < <
 cd - >/dev/null
 
 assert_eq \
-  "empty reviewer output (exit 0) does not block commit" \
-  "0" \
+  "empty reviewer output (exit 0) blocks the commit (issue #590)" \
+  "1" \
   "${exit_t8}"
 
-# Not blocking is not passing (#590): the log says the reviewer did not
-# complete. run-review.sh always writes REVIEW_LOG (its EXIT trap appends
+# The log says the reviewer did not complete (#590). run-review.sh always writes REVIEW_LOG (its EXIT trap appends
 # exit_code), so a missing log is itself a failure, asserted first so it is
 # reported as such rather than as a missing INCOMPLETE line.
 t8_log_exists=no
@@ -2665,16 +2664,18 @@ assert_eq \
   "${exit_t44}"
 
 # =========================================================
-# TEST 45: a timeout stays NON-blocking (issues #172, #199).
+# TEST 45: a code-reviewer timeout blocks the whole-diff commit as INCOMPLETE
+# (issue #590), not as a finding.
 #
 # `timeout` killing the CLI yields exit 124 and zero bytes — not a JSON
 # envelope, not prose. invoke_agent turns that into a synthetic
 # "VERDICT: FAIL (timeout)" carrying no structured decision and no SEVERITY
-# line. The strict extractor must not convert an infrastructure failure into
-# a hard block: an unreachable reviewer is not a blocking finding.
+# line. The strict extractor still must not read that as a BLOCKING finding
+# (#172): nothing is filed and nothing enters round history. But the commit
+# was not reviewed, so it is blocked as INCOMPLETE, as on the chunked path.
 # =========================================================
 echo ""
-echo "=== Test 45: timeout (exit 124, zero bytes) stays non-blocking ==="
+echo "=== Test 45: timeout (exit 124, zero bytes) blocks as INCOMPLETE ==="
 
 setup_repo
 stage_small_change
@@ -2701,12 +2702,12 @@ REVIEW_LOG="${TEST45_LOG}" CLAUDE_CLI="${MOCK45_DIR}/claude" bash "${SUBJECT}" <
 cd - >/dev/null
 
 assert_eq \
-  "timeout with zero bytes does not become a hard block (issue #172)" \
-  "0" \
+  "timeout with zero bytes blocks the commit as INCOMPLETE (issue #590)" \
+  "1" \
   "${exit_t45}"
 
-# Not blocking is not the same as passing (#590): the log must say the
-# reviewer did not complete, not "code-reviewer: FAIL" beside exit_code 0.
+# The log must say the reviewer did not complete, not "code-reviewer: FAIL"
+# (#590).
 log_content45=""
 [[ -f "${TEST45_LOG}" ]] && log_content45=$(<"${TEST45_LOG}")
 assert_contains \

@@ -59,15 +59,15 @@ unset CDPATH
 #
 # STRICT MODE: This script blocks commits when:
 #   - Review finds code quality issues (BLOCKING severity)
-#   - A per-file code-reviewer times out or errors on the chunked path
-#     (incomplete review, #451)
+#   - code-reviewer times out or errors (incomplete review): per file on the
+#     chunked path (#451), and on the whole-diff commit path (#590)
 #   - Diff is too large for automated review
 #   - Review output cannot be parsed (unverified result)
 #
-# NOT (yet) when a reviewer times out or errors on the whole-diff commit path
-# or the full-diff pre-push path. Those are let through by the transient-
-# failure policy (#444) and reported as INCOMPLETE, never as a pass. Whether
-# they should block is open on #590.
+# It does NOT block when adversarial-reviewer times out or errors on the
+# whole-diff commit path ("code-reviewer only"), or when the full-diff
+# pre-push review does. Both are reported as INCOMPLETE or skipped, never as
+# a pass (#590). A timeout is never a finding: nothing is filed for it (#172).
 #
 # Rationale: Unverified code is unsafe code. If the review cannot complete,
 # we cannot verify the code is safe to commit.
@@ -77,6 +77,10 @@ unset CDPATH
 # --- Configuration ---
 CLAUDE_CLI="${CLAUDE_CLI:-${HOME}/.local/bin/claude}"
 TIMEOUT_SECONDS=$(git config --get --type=int review.timeout 2>/dev/null || echo "120")
+# Seconds a reviewer may run with no answer before one "still waiting" line
+# is printed to stderr (#590). 0 turns it off. A value at or past the
+# timeout prints nothing: the timeout message says it all.
+SLOW_NOTICE_SECONDS=$(git config --get --type=int review.slowNotice 2>/dev/null || echo "45")
 
 # Dry-run: run the review exactly as a real run, but print non-blocking
 # findings to stdout instead of filing them. Set by --no-file or by
@@ -535,10 +539,10 @@ strip_structured_blocking() {
 # synthetic "VERDICT: FAIL (timeout)" prose with no sentinel and no SEVERITY
 # line, so they land in the fallback branch and do not block here. Callers
 # must then ask is_transient_verdict() before calling the run a pass: a
-# reviewer that never ran has not reviewed anything (#590). Whether a
-# code-reviewer timeout should block the commit is an open policy question
-# (#590); the whole-diff and full-diff paths currently allow it through and
-# report it as INCOMPLETE, while the chunked path blocks it (#451).
+# reviewer that never ran has not reviewed anything (#590). A code-reviewer
+# timeout blocks the commit as INCOMPLETE on the chunked (#451) and
+# whole-diff (#590) paths; the full-diff path allows it through and reports
+# it as INCOMPLETE.
 output_blocks() {
   local _decision
   _decision=$(read_structured_blocking "$1")
@@ -1583,6 +1587,43 @@ unset _preflight_rc
 # (e.g. "${CODE_REVIEWER_MODEL_ARGS[@]}" or "${ADVERSARIAL_MODEL_ARGS[@]}",
 # possibly empty). Per-call model args replace the old shared global
 # MODEL_ARGS so each reviewer can be pinned to its own model (issue #235).
+# Slow-response notice (#590). _slow_notice_start forks one sleeper that, if
+# it is still alive after SLOW_NOTICE_SECONDS, prints ONE line to stderr;
+# _slow_notice_stop kills it and waits for it. The sleeper blocks in `wait`
+# on its own `sleep`, so it burns no CPU, and its TERM trap kills that sleep
+# at once, so nothing is left holding stderr open after the reviewer returns.
+# Its stdout is /dev/null: a sleeper that inherited a $(...) capture pipe
+# would make the caller wait out the whole threshold. It also checks that
+# the shell that started it is still alive before printing, so a reviewer
+# shell that died without reaching _slow_notice_stop never gets a stray line.
+# Not `local`: set in the caller's shell, read by _slow_notice_stop.
+_SLOW_NOTICE_PID=""
+_slow_notice_start() {
+  local agent_name="$1"
+  _SLOW_NOTICE_PID=""
+  [[ "${SLOW_NOTICE_SECONDS}" =~ ^[0-9]+$ ]] || return 0
+  ((SLOW_NOTICE_SECONDS > 0 && SLOW_NOTICE_SECONDS < TIMEOUT_SECONDS)) || return 0
+  local _owner="${BASHPID}"
+  (
+    _sleep_pid=""
+    trap 'kill "${_sleep_pid}" 2>/dev/null; exit 0' TERM
+    sleep "${SLOW_NOTICE_SECONDS}" 2>/dev/null &
+    _sleep_pid=$!
+    wait "${_sleep_pid}" || exit 0
+    kill -0 "${_owner}" 2>/dev/null || exit 0
+    printf '[review] %s has not responded after %ss — still waiting (timeout at %ss)\n' \
+      "${agent_name}" "${SLOW_NOTICE_SECONDS}" "${TIMEOUT_SECONDS}" >&2
+  ) </dev/null >/dev/null &
+  _SLOW_NOTICE_PID=$!
+}
+
+_slow_notice_stop() {
+  [[ -n "${_SLOW_NOTICE_PID}" ]] || return 0
+  kill "${_SLOW_NOTICE_PID}" 2>/dev/null || true
+  wait "${_SLOW_NOTICE_PID}" 2>/dev/null || true
+  _SLOW_NOTICE_PID=""
+}
+
 invoke_agent() {
   local agent_name="$1"
   local prompt="$2"
@@ -1632,7 +1673,18 @@ invoke_agent() {
   _agent_err=$(mktemp)
   # Use || to prevent set -e from propagating if the CLI exits non-zero.
   # exit_code is then set to the actual failure code for the handler below.
+  #
+  # Every caller runs invoke_agent in a subshell ($(...) or ( ... ) &), so
+  # this EXIT trap is that subshell's own and cannot replace the script's.
+  # It is the backstop; the explicit stop right after the CLI returns is
+  # the normal path. Guarded so a future main-shell caller cannot clobber
+  # the script's EXIT trap.
+  _slow_notice_start "${agent_name}"
+  if [[ "${BASHPID}" != "$$" ]]; then
+    trap '_slow_notice_stop' EXIT
+  fi
   agent_output=$(echo "${prompt}" | timeout "${TIMEOUT_SECONDS}" env -u CLAUDECODE "${CLAUDE_CLI}" --agent "${agent_name}" -p "${model_args[@]}" --output-format json --json-schema "${REVIEW_JSON_SCHEMA}" --tools "" --no-session-persistence 2>"${_agent_err}") || exit_code=$?
+  _slow_notice_stop
   if [[ -s "${_agent_err}" ]]; then
     cat "${_agent_err}" >&2
   fi
@@ -2734,8 +2786,8 @@ ${DIFF}
     elif is_transient_verdict "${FULL_DIFF_OUTPUT}"; then
       # The only reviewer on this path did not run. The push is still let
       # through (transient failures are non-blocking, #444), but it is not a
-      # review and must not be logged as "warnings only" (#590). Whether it
-      # should block is an open question on #590.
+      # review and must not be logged as "warnings only". #590 decided this
+      # path stays non-blocking.
       _fd_reason=$(transient_reason "${FULL_DIFF_OUTPUT}")
       printf 'full-diff: INCOMPLETE (%s)\n' "${_fd_reason}" >>"${REVIEW_LOG}" || true
       log_warn "Full-diff review INCOMPLETE: adversarial-reviewer did not complete (${_fd_reason}) - this branch was NOT reviewed"
@@ -3432,10 +3484,10 @@ DETAILS: [explanation and fix]"
       exit 1
     fi
   elif [[ "${CODE_REVIEWER_INCOMPLETE}" == true ]]; then
-    # Non-blocking, as transient failures have been since #444, but never
-    # reported as warnings or as a pass (#590).
-    log_warn "code-reviewer did NOT complete (${CODE_REVIEWER_INCOMPLETE_REASON}) - it did NOT review this commit (non-blocking)"
-    log_warn "  Re-run: git config review.timeout 300, then retry the commit"
+    # Not a finding (nothing is filed, #172), but the commit was not
+    # reviewed, so it is blocked below, after the adversarial gate has had
+    # its say (#590).
+    log_error "code-reviewer did NOT complete (${CODE_REVIEWER_INCOMPLETE_REASON}) - it did NOT review this commit"
   else
     log_warn "code-reviewer found warnings (non-blocking)"
     # Continue to adversarial if security-critical
@@ -3476,17 +3528,27 @@ if [[ "${ADVERSARIAL_VERDICT}" != "PASS" && "${ADVERSARIAL_VERDICT}" != "FAIL" &
   exit 1
 fi
 
-# Nothing blocked. Say "passed" only for a reviewer that actually reviewed the
-# commit (#590): a timeout used to print "BLOCKING", then "Review passed".
-# The adversarial wording matches the chunked path's "code-reviewer only".
+# A code-reviewer that timed out or errored did not review the commit, so the
+# commit is blocked as INCOMPLETE (#590), as the chunked path blocks the same
+# failure (#451). Checked last so a real adversarial BLOCKING finding is
+# reported as such first. An adversarial-reviewer that did not complete is
+# still allowed through ("code-reviewer only" below).
 if [[ "${CODE_REVIEWER_INCOMPLETE}" == true ]]; then
   if [[ "${ADVERSARIAL_VERDICT}" == "N/A" || "${ADVERSARIAL_INCOMPLETE}" == true ]]; then
-    log_warn "Review INCOMPLETE: no reviewer completed - this commit was NOT reviewed (allowed: transient failures are non-blocking)"
+    log_error "Review INCOMPLETE: no reviewer completed - this commit was NOT reviewed - commit rejected"
   else
-    log_warn "Review INCOMPLETE: code-reviewer did not complete; adversarial-reviewer only - commit allowed (transient failures are non-blocking)"
+    log_error "Review INCOMPLETE: code-reviewer did not complete (adversarial-reviewer alone is not a review) - commit rejected"
   fi
+  log_error "  Retry with a longer timeout: git -c review.timeout=300 commit ..."
+  log_error "  Human bypass (not for agents): git commit --no-verify - see ~/.claude/docs/HUMAN-BYPASS.md"
   printf 'review: INCOMPLETE (code-reviewer did not complete)\n' >>"${REVIEW_LOG}" || true
-elif [[ "${ADVERSARIAL_INCOMPLETE}" == true ]]; then
+  exit 1
+fi
+
+# Nothing blocked. Say "passed" only for a reviewer that actually reviewed the
+# commit (#590). The adversarial wording matches the chunked path's
+# "code-reviewer only".
+if [[ "${ADVERSARIAL_INCOMPLETE}" == true ]]; then
   log_success "Review passed (code-reviewer only; adversarial-reviewer did not complete)"
 elif [[ "${ADVERSARIAL_VERDICT}" != "N/A" ]]; then
   log_success "Review passed (code-reviewer + adversarial-reviewer)"
