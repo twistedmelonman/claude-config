@@ -83,6 +83,10 @@ Commit messages and PR/issue bodies need Andrew's visual approval.
   it sends a `body` field or a GraphQL mutation with a `body:` argument. The
   one verifiable `gh api` form is `-F body=@/absolute/path`. Not gated:
   `gh api --input <json>`, `git tag -m`, `git notes`, `gh release --notes`.
+- The hook joins backslash-continued lines before it checks a command, so a
+  body flag on a continuation line is gated with its verb. It does not join
+  inside single quotes, heredoc bodies, or comments, where bash does not
+  either or where the text is prose.
 - `hook-check-commit-message.py` reads the summary from the file named by
   `git commit -F <absolute path>` as well as from `-m`, so commits made
   through the gate still get the conventional-commits pre-flight.
