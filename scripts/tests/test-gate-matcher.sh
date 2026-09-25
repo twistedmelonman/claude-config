@@ -307,6 +307,13 @@ git commit -F ${APPROVED_TEXT}")" 2
 _case "${PERSONIFY}" "prose: continuation inside single quotes is not joined" \
   "$(_b64 "echo 'run gh pr create --title t \\
 --body x'")" 0
+_case "${PERSONIFY}" "prose: continuation inside \$'...' is not joined" \
+  "$(_b64 "echo \$'run gh pr create --title t \\
+--body x'")" 0
+_case "${PERSONIFY}" "here-string <<< opens no heredoc" \
+  "$(_b64 "cat <<< EOF
+gh pr create --title t \\
+  --body x")" 2
 _case "${PERSONIFY}" "prose: joined double-quoted text stays mid-sentence" \
   "$(_b64 'echo "see gh pr create --title t \
   --body x to do it"')" 0

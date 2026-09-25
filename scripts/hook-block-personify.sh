@@ -129,8 +129,9 @@ _join_continuations() {
         }
         if (c == "\047") { q = 1; buf = buf c; i++; continue }
         if (c == "\"") { q = 2; buf = buf c; i++; continue }
-        if (c == "$" && substr(line, i + 1, 1) == "\047") { q = 3; buf = buf "$\047"; i += 2; continue }
-        if (c == "<" && substr(line, i + 1, 1) == "<" && prev != "<" && substr(line, i + 2, 1) != "<") {
+        nx = substr(line, i + 1, 1)
+        if (c == "$" && nx == "\047") { q = 3; buf = buf "$\047"; i += 2; continue }
+        if (c == "<" && nx == "<" && prev != "<" && substr(line, i + 2, 1) != "<") {
           rest = substr(line, i + 2); strip = 0
           if (substr(rest, 1, 1) == "-") { strip = 1; rest = substr(rest, 2) }
           sub(/^[ \t]+/, "", rest)
@@ -284,8 +285,8 @@ _api_is_gated() {
 
 # A GraphQL query is usually written across several lines inside a quoted
 # string (plain newlines, not continuations, so _join_continuations leaves
-# them), and _segments puts each line in its own segment, so the mutation and its `body:` sit on lines
-# with no `gh api` on them. Measured 2026-09-25: a two-line addComment passed.
+# them), and _segments puts each line in its own segment, so the mutation and
+# its `body:` sit on lines with no `gh api` on them. Measured 2026-09-25: a two-line addComment passed.
 # For a graphql segment, test the whole command (_scan_flat, set once at the
 # top) rather than the segment. Testing only the segment is the bug this
 # fixes. A match elsewhere on the line blocks too, which is the safe direction.
