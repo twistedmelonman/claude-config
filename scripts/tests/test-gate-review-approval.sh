@@ -23,6 +23,9 @@ trap 'rm -rf "${TMP}"' EXIT
 
 export GATE_REVIEW_DIR="${TMP}/gate"
 mkdir -p "${GATE_REVIEW_DIR}/pending" "${GATE_REVIEW_DIR}/approved"
+# The buffer the _split_batch cases hand it directly. Any path works: the
+# per-batch naming under batches/ is exercised through _cmd_open below.
+BUF="${TMP}/buffer.txt"
 
 pass=0
 fail=0
@@ -58,7 +61,7 @@ _load() {
 
 _batch() {
   local status="$1" nonce="$2" body="${3:-body text}"
-  cat >"${GATE_REVIEW_DIR}/batch.txt" <<EOF
+  cat >"${BUF}" <<EOF
 # STATUS: ${status}
 # BATCH: ${nonce}
 
@@ -72,29 +75,29 @@ _load
 # --- _status ----------------------------------------------------------------
 
 _batch PENDING n1
-if [[ "$(_status "${GATE_REVIEW_DIR}/batch.txt")" == "PENDING" ]]; then
+if [[ "$(_status "${BUF}")" == "PENDING" ]]; then
   _ok "PENDING reads as PENDING"
 else
   _no "PENDING reads as PENDING"
 fi
 
 _batch APPROVED n1
-if [[ "$(_status "${GATE_REVIEW_DIR}/batch.txt")" == "APPROVED" ]]; then
+if [[ "$(_status "${BUF}")" == "APPROVED" ]]; then
   _ok "APPROVED reads as APPROVED"
 else
   _no "APPROVED reads as APPROVED"
 fi
 
 _batch approved n1
-if [[ "$(_status "${GATE_REVIEW_DIR}/batch.txt")" == "APPROVED" ]]; then
+if [[ "$(_status "${BUF}")" == "APPROVED" ]]; then
   _ok "lowercase approved is accepted"
 else
   _no "lowercase approved is accepted"
 fi
 
 # A buffer with no status line must not read as approval.
-printf 'no status line here\n' >"${GATE_REVIEW_DIR}/batch.txt"
-if [[ "$(_status "${GATE_REVIEW_DIR}/batch.txt")" == "PENDING" ]]; then
+printf 'no status line here\n' >"${BUF}"
+if [[ "$(_status "${BUF}")" == "PENDING" ]]; then
   _ok "missing STATUS line falls back to PENDING"
 else
   _no "missing STATUS line falls back to PENDING"
@@ -104,7 +107,7 @@ fi
 
 _batch APPROVED right-nonce
 rm -f "${APPROVED:?}"/*
-if _split_batch "${GATE_REVIEW_DIR}/batch.txt" right-nonce >/dev/null 2>&1 &&
+if _split_batch "${BUF}" right-nonce >/dev/null 2>&1 &&
   [[ -f "${APPROVED}/item-one" ]]; then
   _ok "matching batch id splits"
 else
@@ -115,7 +118,7 @@ fi
 # _die exits, so run the refusal in a subshell or it takes the test with it.
 _batch APPROVED right-nonce
 rm -f "${APPROVED:?}"/*
-if (_split_batch "${GATE_REVIEW_DIR}/batch.txt" stale-nonce >/dev/null 2>&1); then
+if (_split_batch "${BUF}" stale-nonce >/dev/null 2>&1); then
   _no "mismatched batch id is refused"
 elif [[ -f "${APPROVED}/item-one" ]]; then
   _no "mismatched batch id is refused (wrote anyway)"
@@ -132,7 +135,7 @@ Body text.
 
 Closes #123'
 rm -f "${APPROVED:?}"/*
-_split_batch "${GATE_REVIEW_DIR}/batch.txt" n2 >/dev/null 2>&1
+_split_batch "${BUF}" n2 >/dev/null 2>&1
 if grep -q '^# A markdown heading$' "${APPROVED}/item-one" 2>/dev/null &&
   grep -q '^Closes #123$' "${APPROVED}/item-one" 2>/dev/null; then
   _ok "body keeps its # lines"
@@ -163,7 +166,7 @@ _multi_batch() {
     echo ""
     echo "=== item-b ==="
     cat "${b}"
-  } >"${GATE_REVIEW_DIR}/batch.txt"
+  } >"${BUF}"
 }
 
 A="${TMP}/a.txt"
@@ -172,7 +175,7 @@ printf 'fix(one): first body\n' >"${A}"
 printf 'fix(two): second body\n' >"${B}"
 rm -f "${APPROVED:?}"/*
 _multi_batch rt "${A}" "${B}"
-_split_batch "${GATE_REVIEW_DIR}/batch.txt" rt >/dev/null 2>&1
+_split_batch "${BUF}" rt >/dev/null 2>&1
 
 if _cmd_check "${A}" && _cmd_check "${B}"; then
   _ok "both staged files verify against their approvals"
@@ -191,8 +194,8 @@ rm -f "${APPROVED:?}"/*
   echo ""
   echo "=== item-c ==="
   cat "${TMP}/c.txt"
-} >"${GATE_REVIEW_DIR}/batch.txt"
-_split_batch "${GATE_REVIEW_DIR}/batch.txt" nl >/dev/null 2>&1
+} >"${BUF}"
+_split_batch "${BUF}" nl >/dev/null 2>&1
 if grep -q 'line two no newline' "${APPROVED}/item-c" 2>/dev/null; then
   _ok "a body with no trailing newline keeps its last line"
 else
@@ -226,7 +229,7 @@ fi
 rm -f "${APPROVED:?}"/*
 printf 'earlier approval\n' >"${APPROVED}/from-an-earlier-batch"
 _batch APPROVED later 'a later body'
-_split_batch "${GATE_REVIEW_DIR}/batch.txt" later >/dev/null 2>&1
+_split_batch "${BUF}" later >/dev/null 2>&1
 if [[ -f "${APPROVED}/from-an-earlier-batch" ]]; then
   _ok "a new batch leaves an earlier batch's approval standing"
 else
@@ -237,14 +240,14 @@ fi
 # a prior approval of the same name, not leave the old one in place.
 rm -f "${APPROVED:?}"/*
 _batch APPROVED rev1 'original body'
-_split_batch "${GATE_REVIEW_DIR}/batch.txt" rev1 >/dev/null 2>&1
-cat >"${GATE_REVIEW_DIR}/batch.txt" <<'EOF'
+_split_batch "${BUF}" rev1 >/dev/null 2>&1
+cat >"${BUF}" <<'EOF'
 # STATUS: APPROVED
 # BATCH: rev2
 
 === item-one ===
 EOF
-_split_batch "${GATE_REVIEW_DIR}/batch.txt" rev2 >/dev/null 2>&1
+_split_batch "${BUF}" rev2 >/dev/null 2>&1
 if [[ -f "${APPROVED}/item-one" ]]; then
   _no "emptying an item revokes its earlier approval"
 else
@@ -380,8 +383,8 @@ rm -f "${APPROVED:?}"/*
   echo ""
   echo "=== item-v ==="
   cat "${V}"
-} >"${GATE_REVIEW_DIR}/batch.txt"
-_split_batch "${GATE_REVIEW_DIR}/batch.txt" vh >/dev/null 2>&1
+} >"${BUF}"
+_split_batch "${BUF}" vh >/dev/null 2>&1
 if _cmd_check "${V}"; then
   _ok "verdict header lines leave approved bytes unchanged"
 else
@@ -474,6 +477,137 @@ if [[ -f "${APPROVED}/fresh" ]]; then
   _ok "stage leaves a fresh approval standing"
 else
   _no "stage leaves a fresh approval standing"
+fi
+
+# --- open: each batch gets its own file ------------------------------------
+
+# Every `open` used to write and open one shared ${GATE_DIR}/batch.txt, so
+# BBEdit could show or save a buffer that belonged to another batch. Each batch
+# now gets a file named for the caller's repo and branch plus its nonce.
+#
+# Driven through _cmd_open with the GUI stubbed by executables on PATH:
+# launchctl reports Aqua, pgrep finds no other open, and `open` records the
+# path it was handed and then plays the human, writing the status word into
+# that file. The status poll then sees it on its first pass.
+export EDITOR_APP=stub-editor POLL_TIMEOUT=6
+export OPENED_LOG="${TMP}/opened.log" STUB_STATUS=APPROVED
+STUB_BIN="${TMP}/stub-bin"
+mkdir -p "${STUB_BIN}"
+printf '#!/usr/bin/env bash\necho Aqua\n' >"${STUB_BIN}/launchctl"
+printf '#!/usr/bin/env bash\nexit 1\n' >"${STUB_BIN}/pgrep"
+cat >"${STUB_BIN}/open" <<'STUB'
+#!/usr/bin/env bash
+f="${*: -1}"
+printf '%s\n' "${f}" >>"${OPENED_LOG}"
+sed -i.bak "s/^# STATUS: PENDING/# STATUS: ${STUB_STATUS}/" "${f}" && rm -f "${f}.bak"
+STUB
+chmod +x "${STUB_BIN}"/*
+
+_mkrepo() {
+  mkdir -p "$1"
+  command git -C "$1" init -q -b "$2"
+}
+
+# Run one open from $1 with one staged item; print the path it opened.
+_open_from() {
+  local rc=0
+  : >"${OPENED_LOG}"
+  printf 'fix(x): staged from %s\n' "$1" >"${PENDING}/item"
+  (cd "$1" && PATH="${STUB_BIN}:${PATH}" && _cmd_open) >/dev/null 2>&1 || rc=$?
+  cat "${OPENED_LOG}"
+  return "${rc}"
+}
+
+rm -f "${APPROVED:?}"/* "${PENDING:?}"/*
+_mkrepo "${TMP}/repos/alpha" main
+_mkrepo "${TMP}/repos/beta" feat/x
+_mkrepo "${TMP}/repos/weird name" 'fix/a+b'
+mkdir -p "${TMP}/nogit"
+# A stand-in for another batch's file: cleanup must never touch it.
+mkdir -p "${GATE_REVIEW_DIR}/batches"
+printf 'another batch\n' >"${GATE_REVIEW_DIR}/batches/other-main-1-1.txt"
+
+P1="$(_open_from "${TMP}/repos/alpha")" || true
+P2="$(_open_from "${TMP}/repos/beta")" || true
+if [[ -n "${P1}" && -n "${P2}" && "${P1}" != "${P2}" ]]; then
+  _ok "batches from different repos/branches get different files"
+else
+  _no "batches from different repos/branches get different files (got '${P1}' and '${P2}')"
+fi
+if [[ "${P1}" == "${GATE_REVIEW_DIR}/batches/alpha-main-"*.txt ]]; then
+  _ok "the batch file is named <repo>-<branch>-<nonce>.txt under batches/"
+else
+  _no "the batch file is named <repo>-<branch>-<nonce>.txt under batches/ (got '${P1}')"
+fi
+if [[ "${P2##*/}" == beta-feat-x-*.txt ]]; then
+  _ok "a / in the branch name is sanitized"
+else
+  _no "a / in the branch name is sanitized (got '${P2##*/}')"
+fi
+P3="$(_open_from "${TMP}/repos/weird name")" || true
+if [[ "${P3##*/}" =~ ^[A-Za-z0-9._-]+\.txt$ && "${P3##*/}" == weird-name-fix-a-b-* ]]; then
+  _ok "spaces and / in repo and branch are sanitized"
+else
+  _no "spaces and / in repo and branch are sanitized (got '${P3##*/}')"
+fi
+P4="$(_open_from "${TMP}/nogit")" || true
+if [[ "${P4}" == "${GATE_REVIEW_DIR}/batches/batch-"*.txt ]]; then
+  _ok "outside a git repo the file falls back to batch-<nonce>.txt"
+else
+  _no "outside a git repo the file falls back to batch-<nonce>.txt (got '${P4}')"
+fi
+if [[ -f "${APPROVED}/item" ]] && grep -q 'nogit' "${APPROVED}/item"; then
+  _ok "an approved open still splits its own batch"
+else
+  _no "an approved open still splits its own batch"
+fi
+if [[ -n "${P1}" && ! -e "${P1}" && -n "${P4}" && ! -e "${P4}" ]]; then
+  _ok "a split batch's file is removed"
+else
+  _no "a split batch's file is removed"
+fi
+if [[ -f "${GATE_REVIEW_DIR}/batches/other-main-1-1.txt" ]]; then
+  _ok "cleanup leaves other batches' files alone"
+else
+  _no "cleanup leaves other batches' files alone"
+fi
+if [[ ! -e "${GATE_REVIEW_DIR}/batch.txt" ]]; then
+  _ok "no shared batch.txt is written"
+else
+  _no "no shared batch.txt is written"
+fi
+
+# ABORT still wipes every approval, and its batch file goes too.
+printf 'keep?\n' >"${APPROVED}/earlier"
+STUB_STATUS=ABORT
+rc5=0
+P5="$(_open_from "${TMP}/repos/alpha")" || rc5=$?
+if [[ "${rc5}" != 0 ]] && ! compgen -G "${APPROVED}/*" >/dev/null; then
+  _ok "ABORT approves nothing and wipes approved/"
+else
+  _no "ABORT approves nothing and wipes approved/"
+fi
+if [[ -n "${P5}" && ! -e "${P5}" ]]; then
+  _ok "an aborted batch's file is removed"
+else
+  _no "an aborted batch's file is removed (got '${P5}')"
+fi
+STUB_STATUS=APPROVED
+
+# The nonce still binds the file to its process: a buffer carrying another
+# batch's id is refused even under the new per-batch path.
+rm -f "${APPROVED:?}"/*
+FOREIGN="${GATE_REVIEW_DIR}/batches/alpha-main-9-9.txt"
+printf '# STATUS: APPROVED\n# BATCH: 9-9\n\n=== item ===\nforeign\n' >"${FOREIGN}"
+if (_split_batch "${FOREIGN}" 1-1 >/dev/null 2>&1); then
+  _no "a per-batch file with a foreign nonce is refused"
+else
+  _ok "a per-batch file with a foreign nonce is refused"
+fi
+if [[ ! -e "${APPROVED}/item" ]]; then
+  _ok "the refused foreign buffer approves nothing"
+else
+  _no "the refused foreign buffer approves nothing"
 fi
 
 echo "--- ${pass} passed, ${fail} failed"
