@@ -470,6 +470,10 @@ _case "${DIRWRITE}" "tilde-spelled path into merge-locks" \
   "$(_b64 'cp /tmp/x ~/.claude/merge-locks/fake')" 2
 _case "${DIRWRITE}" "batch.txt is a gate file too" \
   "$(_b64 "echo '# STATUS: APPROVED' > ${HOME}/.claude/gate-review/batch.txt")" 2
+_case "${DIRWRITE}" "a per-batch file under batches/ is a gate file too" \
+  "$(_b64 "echo '# STATUS: APPROVED' > ${HOME}/.claude/gate-review/batches/dotfiles-main-1-2.txt")" 2
+_case "${DIRWRITE}" "sed -i on a per-batch file" \
+  "$(_b64 "sed -i '' s/PENDING/APPROVED/ ${HOME}/.claude/gate-review/batches/dotfiles-main-1-2.txt")" 2
 _case "${DIRWRITE}" "redirect into personify checks" \
   "$(_b64 "echo '{}' > ${HOME}/.config/personify/checks/abc.json")" 2
 _case "${DIRWRITE}" "cp into personify checks" \
@@ -574,6 +578,8 @@ _wcase "Write SUSPENDED, tilde-spelled" \
   "$(printf '%s/.claude/gate-review/SUSPENDED' '~')" 2
 _wcase "Write into gate-review/approved" \
   "${HOME}/.claude/gate-review/approved/x" 2
+_wcase "Write into gate-review/batches" \
+  "${HOME}/.claude/gate-review/batches/dotfiles-main-1-2.txt" 2
 _wcase "the key file beside checks/ stays writable" \
   "${HOME}/.config/personify/pangram-key" 0
 _wcase "the voice guide beside checks/ stays writable" \

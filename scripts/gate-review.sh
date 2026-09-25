@@ -163,24 +163,58 @@ _cmd_stage() {
   printf 'staged: %s\n' "${name}"
 }
 
+# Where this batch's buffer lives: one file per batch, named for the caller's
+# repo and branch so the BBEdit window title says whose text it is. Every
+# batch used to share ${GATE_DIR}/batch.txt, so BBEdit could show, or save
+# over, a buffer that belonged to another batch.
+#
+# No PR number: finding one means a network call (`gh pr view`) inside the
+# approval path, which can hang or prompt for auth. The branch already names
+# the PR, and the nonce makes the name unique.
+#
+# Every component is reduced to [A-Za-z0-9._-]: branch names carry `/`, and a
+# repo directory can hold spaces.
+_batch_path() {
+  local nonce="$1" dir top repo branch
+  dir="${GATE_DIR}/batches"
+  mkdir -p "${dir}"
+  nonce="${nonce//[^A-Za-z0-9._-]/-}"
+  top="$(git rev-parse --show-toplevel 2>/dev/null)" || top=""
+  if [[ -z "${top}" ]]; then
+    printf '%s/batch-%s.txt\n' "${dir}" "${nonce}"
+    return 0
+  fi
+  repo="${top##*/}"
+  repo="${repo//[^A-Za-z0-9._-]/-}"
+  branch="$(git branch --show-current 2>/dev/null)" || branch=""
+  if [[ -z "${branch}" ]]; then
+    branch="$(git rev-parse --short HEAD 2>/dev/null)" || branch="unborn"
+    branch="detached-${branch}"
+  fi
+  branch="${branch//[^A-Za-z0-9._-]/-}"
+  printf '%s/%s-%s-%s.txt\n' "${dir}" "${repo}" "${branch}" "${nonce}"
+}
+
 _cmd_open() {
   local batch count waited=0 nonce status
-  batch="${GATE_DIR}/batch.txt"
 
   count=$(find "${PENDING}" -type f | wc -l | tr -d ' ')
   ((count > 0)) || _die "nothing staged"
 
   _require_gui
 
-  # A second `open` sharing this GATE_DIR races on one batch.txt: whichever
-  # process polls first splits whatever the other one wrote. Measured
-  # 2026-09-18 -- a stale poller from an interrupted session split a newer
-  # batch and reported it approved, with no human involved at all.
+  # A per-batch file keeps two batches out of one editor buffer, but pending/
+  # and approved/ are still shared by every session. A second `open` running
+  # at the same time would batch the same staged items and could approve them
+  # first. Measured 2026-09-18, back when both also shared one batch.txt: a
+  # stale poller from an interrupted session split a newer batch and reported
+  # it approved, with no human involved at all.
   _refuse_if_open
 
   # Bound this batch to this process. _split_batch refuses a buffer carrying a
   # different id, so a stale poller cannot approve text it never wrote.
   nonce="$$-$(date +%s)"
+  batch="$(_batch_path "${nonce}")"
 
   # One buffer for the whole set: the reviewer reads and edits everything in a
   # single pass, which is the point of batching.
@@ -232,6 +266,7 @@ _cmd_open() {
     APPROVED) ;;
     ABORT)
       rm -f "${APPROVED:?}"/*
+      rm -f "${batch}"
       _die "ABORT; nothing approved"
       ;;
     PENDING)
@@ -243,6 +278,11 @@ _cmd_open() {
   esac
 
   _split_batch "${batch}" "${nonce}"
+  # Only this batch's own file, and only once it is consumed, so batches/ does
+  # not grow without bound. A PENDING timeout or a refused split leaves the
+  # file in place: the reviewer may still have it open, and its unique name
+  # means no later batch can pick it up.
+  rm -f "${batch}"
   printf 'approved %s item(s)\n' "$(find "${APPROVED}" -type f | wc -l | tr -d ' ')"
 }
 
