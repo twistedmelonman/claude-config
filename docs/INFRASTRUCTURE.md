@@ -184,7 +184,7 @@ This enforcement exists because of two incidents on 2026-02-24:
 After every commit, verify the hook ran by reading the log header:
 
 ```bash
-head -6 $(git rev-parse --git-dir)/last-review-result.log
+head -6 "$(git -C /abs/path/to/repo rev-parse --absolute-git-dir)/last-review-result.log"
 ```
 
 Check: timestamp within ~60s, repo matches, branch matches, commit matches HEAD.

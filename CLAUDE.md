@@ -72,6 +72,7 @@ Run `date` before reporting it. Never state a date you did not check.
 - NEVER use shell `cd` — Bash tool cwd is stateful
 - ALWAYS use `git -C /absolute/path` for git commands
 - ALWAYS use package manager `--dir` or `--filter` flags with absolute path
+- `git rev-parse --git-dir` is cwd-relative; use `--absolute-git-dir`
 
 ---
 
@@ -148,7 +149,7 @@ VERDICT: [READY TO COMMIT / BLOCKED - reason]
 
 This block is canonical.
 
-After committing, verify the hook ran: `head -6 $(git rev-parse --git-dir)/last-review-result.log` — check timestamp, repo, branch, and commit fields all match.
+After committing, verify the hook ran: `head -6 "$(git -C /abs/path/to/repo rev-parse --absolute-git-dir)/last-review-result.log"` — check timestamp, repo, branch, and commit fields all match. Plain `--git-dir` prints a path relative to the shell's cwd, so from another directory it reads a different repo's log.
 
 **Before pushing, in order:**
 
