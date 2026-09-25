@@ -9,7 +9,8 @@
 #
 #   1. set -e propagation: transient Claude CLI failure must produce log output beyond bare exit_code
 #   2. Chunked review log: reviewer output must appear in REVIEW_LOG when chunked path runs
-#   3. Chunked review with 0/N files reviewed is fail-closed (issue #200); 3b: partial skip still passes
+#   3. Chunked review with 0/N files reviewed is fail-closed (issue #200); 3b: a partial
+#      skip is fail-closed too and names the unreviewed files (issue #451)
 #   4. Stderr hint: chunked review failure (blocking verdict) must emit workaround hint
 #   5. review.timeout git config is honoured
 #   6. make_mock_claude must handle double-quotes in output without script syntax errors
@@ -51,6 +52,11 @@
 #       object with no prose in it, so the VERDICT block is rendered out of
 #       .structured_output. Caught by a live dry-run, not by any mock — every
 #       mock was green while the gate would have hard-blocked every commit
+#   59-61. A BLOCKING finding the reviewer could not have verified does not
+#       block: a LOCATION outside the diff (#488) or an external-behavior claim
+#       (#455/#555); the same finding located in the diff still blocks, and a
+#       security finding outside the diff still blocks (60b)
+#   62-63. Full-diff mode puts the branch commit messages in the prompt (#489)
 
 set -euo pipefail
 
@@ -402,16 +408,17 @@ assert_contains \
   "${log_content}"
 
 # =========================================================
-# TEST 3b: Partial skip (some files reviewed) is still non-fatal
+# TEST 3b: Partial skip (some files reviewed) is ALSO fail-closed (#451)
 #
-# Regression guard for #200: the fail-closed behavior above must trigger
-# ONLY when reviewed_files is exactly 0. If at least one file was actually
-# reviewed (and passed), a mix of skipped + reviewed files must still allow
-# the commit through — the fix should not regress the original "one bad
-# file doesn't kill the whole batch" behavior.
+# This test used to assert the opposite: that one reviewed file plus four
+# skipped files passed. That is the false pass #451 reported — a 2625-line
+# commit reviewed its two prose files, skipped the 1029-line script and its
+# test suite, and printed "Chunked review passed". A file that was not
+# reviewed is not a pass, whatever the other files did. The run now blocks
+# as INCOMPLETE and names every unreviewed file in the log.
 # =========================================================
 echo ""
-echo "=== Test 3b: Partial skip (some files reviewed) does not block commit ==="
+echo "=== Test 3b: Partial skip (some files reviewed) blocks as INCOMPLETE (#451) ==="
 
 setup_repo
 stage_large_change
@@ -450,13 +457,23 @@ cd - >/dev/null
 log_content_t3b="$(cat "${TEST3B_LOG}" 2>/dev/null || echo "")"
 
 assert_eq \
-  "partial skip (1 reviewed, 4 skipped) still passes (exit 0)" \
-  "0" \
+  "partial skip (1 reviewed, 4 skipped) blocks commit (exit 1) - issue #451" \
+  "1" \
   "${exit_code_t3b}"
 
 assert_contains \
   "log shows at least 1 file was reviewed" \
   "Reviewed: 1/" \
+  "${log_content_t3b}"
+
+assert_contains \
+  "log records the run as INCOMPLETE - issue #451" \
+  "chunked: INCOMPLETE" \
+  "${log_content_t3b}"
+
+assert_contains \
+  "log names an unreviewed file - issue #451" \
+  "unreviewed: file2.sh" \
   "${log_content_t3b}"
 
 # =========================================================
@@ -3400,6 +3417,135 @@ assert_contains \
   "control: the renderer emitted a matchable SEVERITY: BLOCKING line" \
   "SEVERITY: BLOCKING" \
   "${t58_log}"
+
+# =========================================================
+# TEST 59-60: a BLOCKING finding whose LOCATION names no file in the diff is
+# downgraded end to end (claude-config#488); the same finding located in the
+# diff still blocks. #488's reviewer cited `tally.sh`, which never existed.
+# =========================================================
+echo ""
+echo "=== Test 59-60: LOCATION outside the diff does not block (#488) ==="
+
+_t59_run() {
+  local loc="$1" label="$2"
+  local issue="${3:-off-by-one in the tally loop}"
+  local details="${4:-The loop skips the last element.}"
+  _t59_rc=0
+  setup_repo
+  stage_small_change
+  make_mock_claude "${TMPDIR_TEST}/mock${label}" 0 "VERDICT: FAIL
+
+ISSUE: ${issue}
+SEVERITY: BLOCKING
+LOCATION: ${loc}
+DETAILS: ${details}"
+  rm -f "${TMPDIR_TEST}/test${label}-review.log"
+  cd "${REPO_DIR}"
+  REVIEW_LOG="${TMPDIR_TEST}/test${label}-review.log" CLAUDE_CLI="${TMPDIR_TEST}/mock${label}/claude" \
+    bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || _t59_rc=$?
+  cd - >/dev/null
+}
+
+_t59_run "tally.sh:14" 59 >/dev/null
+exit_t59="${_t59_rc}"
+log_t59=$(cat "${TMPDIR_TEST}/test59-review.log" 2>/dev/null || true)
+assert_eq "#488: a finding against a file not in the diff does not block" "0" "${exit_t59}"
+assert_contains \
+  "#488: the downgrade is recorded in the review log" \
+  "downgraded: LOCATION names no file in the reviewed diff" \
+  "${log_t59}"
+
+_t59_run "foo.sh:2" 60 >/dev/null
+exit_t60="${_t59_rc}"
+assert_eq "#488 control: the same finding located in the diff still blocks" "1" "${exit_t60}"
+
+# #488's literal finding (a leaked token plus eval, against tally.sh) is a
+# security class, so the location check must NOT downgrade it: a reviewer
+# cannot launder a credential finding into a warning by misplacing it.
+_t59_run "tally.sh:14" 60b "Hardcoded GitHub API token and unsafe rm with eval" \
+  "A token is embedded and eval runs rm on untrusted input." >/dev/null
+exit_t60b="${_t59_rc}"
+assert_eq "#488: a security finding outside the diff still blocks" "1" "${exit_t60b}"
+
+# =========================================================
+# TEST 61: an external-behavior claim does not block end to end (#455/#555).
+# Wording is the measured live Haiku finding from the #455 reproduction.
+# =========================================================
+echo ""
+echo "=== Test 61: external-behavior claim does not block (#455/#555) ==="
+
+setup_repo
+stage_small_change
+make_mock_claude "${TMPDIR_TEST}/mock61" 0 "VERDICT: FAIL
+
+ISSUE: Submission ID placeholder syntax is invalid for Netlify Forms
+SEVERITY: BLOCKING
+LOCATION: foo.sh:2
+DETAILS: Netlify Forms does not support this syntax. This will be sent literally in the email subject."
+TEST61_LOG="${TMPDIR_TEST}/test61-review.log"
+rm -f "${TEST61_LOG}"
+exit_t61=0
+cd "${REPO_DIR}"
+REVIEW_LOG="${TEST61_LOG}" CLAUDE_CLI="${TMPDIR_TEST}/mock61/claude" \
+  bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || exit_t61=$?
+cd - >/dev/null
+log_t61=$(cat "${TEST61_LOG}" 2>/dev/null || true)
+assert_eq "#455: an unverifiable external-behavior claim does not block" "0" "${exit_t61}"
+assert_contains \
+  "#455: the downgrade is recorded in the review log" \
+  "downgraded: claim about external tool/service behavior" \
+  "${log_t61}"
+
+# =========================================================
+# TEST 62-63: full-diff mode puts the branch's commit messages in the prompt
+# (claude-config#489), and still blocks on a real BLOCKING finding.
+# =========================================================
+echo ""
+echo "=== Test 62-63: full-diff prompt carries the branch's commit messages (#489) ==="
+
+setup_repo
+cd "${REPO_DIR}"
+git branch -M main
+git checkout -q -b feature
+echo "echo one" >>foo.sh
+git add foo.sh
+git commit -q -m "feat: first change" -m "RATIONALE-ONE outage window accepted" --no-verify
+echo "echo two" >>foo.sh
+git add foo.sh
+git commit -q -m "feat: second change" -m "RATIONALE-TWO destroy/recreate is deliberate" --no-verify
+cd - >/dev/null
+
+MOCK62_DIR="${TMPDIR_TEST}/mock62"
+mkdir -p "${MOCK62_DIR}"
+cat >"${MOCK62_DIR}/claude" <<EOF
+#!/usr/bin/env bash
+if [[ "\$1" == "--version" ]]; then
+  echo "mock-claude 0.0.0-test"
+  exit 0
+fi
+cat >> "${MOCK62_DIR}/received_prompt.txt"
+echo "VERDICT: FAIL
+
+ISSUE: Cross-file inconsistency
+SEVERITY: BLOCKING
+LOCATION: foo.sh:2
+DETAILS: Fix the cross-file mismatch."
+exit 0
+EOF
+chmod +x "${MOCK62_DIR}/claude"
+rm -f "${MOCK62_DIR}/received_prompt.txt"
+
+exit_t62=0
+cd "${REPO_DIR}"
+git diff main...HEAD | REVIEW_LOG="${TMPDIR_TEST}/test62-review.log" CLAUDE_CLI="${MOCK62_DIR}/claude" \
+  bash "${SUBJECT}" --mode=full-diff 2>/dev/null || exit_t62=$?
+cd - >/dev/null
+received62="$(cat "${MOCK62_DIR}/received_prompt.txt" 2>/dev/null || echo "")"
+
+assert_contains "#489: full-diff prompt carries the newest commit's message" "RATIONALE-TWO" "${received62}"
+assert_contains "#489: full-diff prompt carries the older commit's message" "RATIONALE-ONE" "${received62}"
+assert_contains "#489: the messages arrive under the intent header" "DEVELOPER INTENT (commit messages on this branch" "${received62}"
+assert_eq "#489 control: a real BLOCKING cross-file finding still blocks the push" "1" "${exit_t62}"
 
 # =========================================================
 # Summary
