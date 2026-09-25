@@ -8,11 +8,16 @@
 # having been reviewed by one reviewer at most, and every surface said it
 # passed. It fired on two real commits on 2026-09-24/25.
 #
-# These tests pin the REPORTING, not the exit code. Transient failures are
-# non-blocking by the policy #444 stated ("an unreachable reviewer is not a
-# blocking finding"); the chunked path blocks the same timeout (#451). Which
-# one is right is the open question on #590. Until it is answered, a reviewer
-# that did not run is reported as INCOMPLETE, never as a pass or as warnings.
+# A reviewer that did not run is reported as INCOMPLETE, never as a pass or
+# as warnings. #590 decided the exit code per path:
+#   - whole-diff commit, code-reviewer did not complete: the commit is
+#     BLOCKED, as the chunked path already blocks it (#451);
+#   - whole-diff commit, adversarial-reviewer did not complete: allowed,
+#     reported "code-reviewer only";
+#   - full-diff pre-push: allowed, reported INCOMPLETE.
+# A timeout is still not a finding (#172): nothing is filed for it.
+#
+# The slow-response notice (review.slowNotice) is pinned at the end.
 #
 # The mock exits 124 with no output, which is exactly what `timeout` returns
 # when it kills the CLI. One case uses a real `timeout` kill as well, so the
@@ -128,11 +133,15 @@ _run_full_diff() {
   touch "${MOCK_DIR}/timeout-code-reviewer"
 
   run _run_review
-  # Exit code unchanged: transient failures are non-blocking (#444).
-  [ "$status" -eq 0 ]
+  # A code-reviewer that did not complete blocks the commit (#590).
+  [ "$status" -eq 1 ]
   [[ "$output" != *"Review passed"* ]]
   [[ "$output" == *"Review INCOMPLETE"* ]]
   [[ "$output" == *"code-reviewer did NOT complete (timeout)"* ]]
+  # It says how to retry, and names the human bypass.
+  [[ "$output" == *"git -c review.timeout=300 commit"* ]]
+  [[ "$output" == *"git commit --no-verify"* ]]
+  [[ "$output" == *"HUMAN-BYPASS.md"* ]]
   # invoke_agent no longer claims a block the caller does not enforce.
   [[ "$output" != *"BLOCKING: Review timeout"* ]]
   grep -qx 'code-reviewer: INCOMPLETE (timeout)' "${EXPECTED_LOG}"
@@ -147,9 +156,10 @@ _run_full_diff() {
   touch "${MOCK_DIR}/sleep-code-reviewer"
 
   run _run_review
-  [ "$status" -eq 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" != *"Review passed"* ]]
   grep -qx 'code-reviewer: INCOMPLETE (timeout)' "${EXPECTED_LOG}"
+  grep -qx 'exit_code: 1' "${EXPECTED_LOG}"
 }
 
 @test "#590: code-reviewer timeout with no adversarial-reviewer says nothing reviewed" {
@@ -158,7 +168,7 @@ _run_full_diff() {
   touch "${MOCK_DIR}/timeout-code-reviewer"
 
   run _run_review
-  [ "$status" -eq 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" != *"Review passed"* ]]
   [[ "$output" == *"was NOT reviewed"* ]]
   grep -qx 'code-reviewer: INCOMPLETE (timeout)' "${EXPECTED_LOG}"
@@ -169,7 +179,7 @@ _run_full_diff() {
   touch "${MOCK_DIR}/timeout-code-reviewer" "${MOCK_DIR}/timeout-adversarial-reviewer"
 
   run _run_review
-  [ "$status" -eq 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" != *"Review passed"* ]]
   [[ "$output" == *"was NOT reviewed"* ]]
   grep -qx 'code-reviewer: INCOMPLETE (timeout)' "${EXPECTED_LOG}"
@@ -240,4 +250,57 @@ EOF
   run _run_full_diff
   [ "$status" -eq 0 ]
   grep -qx 'full-diff: INCOMPLETE (agent error)' "${EXPECTED_LOG}"
+}
+
+# --- slow-response notice (review.slowNotice) -------------------------------
+
+@test "slow notice: a reviewer still running after review.slowNotice gets ONE line" {
+  rm -rf "${FAKE_HOME}/.claude/plugins"
+  _stage_change
+  git -C "${TMPDIR_TEST}" config review.slowNotice 1
+  git -C "${TMPDIR_TEST}" config review.timeout 3
+  touch "${MOCK_DIR}/sleep-code-reviewer"
+
+  run _run_review
+  # The reviewer runs under its plugin-qualified id, which ends in code-reviewer.
+  [[ "$output" == *"[review] "*"code-reviewer has not responded after 1s — still waiting (timeout at 3s)"* ]]
+  [ "$(grep -c 'has not responded after' <<<"$output")" -eq 1 ]
+}
+
+@test "slow notice: only the slow reviewer is named when both run" {
+  _stage_change
+  git -C "${TMPDIR_TEST}" config review.slowNotice 1
+  git -C "${TMPDIR_TEST}" config review.timeout 3
+  touch "${MOCK_DIR}/sleep-code-reviewer"
+
+  run _run_review
+  [ "$(grep -c 'code-reviewer has not responded after 1s' <<<"$output")" -eq 1 ]
+  [[ "$output" != *"adversarial-reviewer has not responded"* ]]
+}
+
+@test "slow notice: a reviewer that answers before the threshold gets none, and nothing lingers" {
+  _stage_change
+  git -C "${TMPDIR_TEST}" config review.slowNotice 6
+
+  local start=${SECONDS}
+  run _run_review
+  local elapsed=$((SECONDS - start))
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"has not responded"* ]]
+  # A sleeper that outlived its reviewer would hold the output pipe open,
+  # so `run` would wait for it and then capture its notice. Finishing well
+  # before the threshold proves it was killed, not just silent so far.
+  [ "${elapsed}" -lt 6 ]
+}
+
+@test "slow notice: a threshold at or past the timeout prints nothing" {
+  rm -rf "${FAKE_HOME}/.claude/plugins"
+  _stage_change
+  git -C "${TMPDIR_TEST}" config review.slowNotice 5
+  git -C "${TMPDIR_TEST}" config review.timeout 2
+  touch "${MOCK_DIR}/sleep-code-reviewer"
+
+  run _run_review
+  [ "$status" -eq 1 ]
+  [[ "$output" != *"has not responded"* ]]
 }

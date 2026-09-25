@@ -199,14 +199,23 @@ The global `~/.claude/last-review-result.log` is a pointer file with a `log:` fi
 
 What a timeout (or agent error) does depends on the path:
 
-- Chunked commit review: a file whose code-reviewer pass timed out is unreviewed, and the commit is blocked as INCOMPLETE.
-- Whole-diff commit review and full-diff pre-push review: the commit or push is let through, and the hook says `Review INCOMPLETE` / `Full-diff review INCOMPLETE`. The log records `code-reviewer: INCOMPLETE (timeout)`, `adversarial-reviewer: skipped (timeout or agent error)`, or `full-diff: INCOMPLETE (timeout)`. That commit was not reviewed. Whether these paths should block is open on #590.
+- Chunked commit review: a file whose code-reviewer pass timed out is unreviewed, and the commit is blocked as INCOMPLETE (#451).
+- Whole-diff commit review, code-reviewer timed out or errored: the commit is blocked. The hook says `Review INCOMPLETE ... commit rejected`, and the log records `code-reviewer: INCOMPLETE (timeout)` (or `(agent error)`) and `review: INCOMPLETE` (#590).
+- Whole-diff commit review, adversarial-reviewer timed out or errored: the commit is let through as `Review passed (code-reviewer only ...)`. The log records `adversarial-reviewer: skipped (timeout or agent error)`.
+- Full-diff pre-push review: the push is let through, and the hook says `Full-diff review INCOMPLETE`. The log records `full-diff: INCOMPLETE (timeout)`. That branch was not reviewed.
+
+A timeout is never a finding: nothing is filed for it (#172).
 
 To get a real review:
 
 - Retry the commit (transient failures happen)
-- Increase timeout: `git config review.timeout 300`
+- Retry once with a longer timeout: `git -c review.timeout=300 commit ...`
+- Increase the timeout for good: `git config review.timeout 300`
 - Split into smaller commits
+
+The human bypass is `git commit --no-verify` (see `docs/HUMAN-BYPASS.md`). Agents cannot use it.
+
+While a reviewer runs, the hook prints one line to stderr if it has not answered after `review.slowNotice` seconds (default 45), for example `[review] code-reviewer has not responded after 45s — still waiting (timeout at 120s)`. Set `review.slowNotice` to 0 to turn it off. A value at or past `review.timeout` prints nothing.
 
 ---
 
