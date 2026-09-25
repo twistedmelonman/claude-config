@@ -29,6 +29,15 @@
 #
 # PR and issue TITLES stay ungated -- one line by nature. `gh pr edit` is
 # gated only when it carries a body flag, so label and title edits pass.
+# `gh pr review` follows the same rule: `--approve` alone passes, a review
+# body is gated.
+#
+# `gh api` is gated when it sends a field named `body` or runs a GraphQL
+# mutation with a body argument (claude-config#548). The one verifiable form
+# is `-F body=@/absolute/path`; every inline value, and every GraphQL body,
+# blocks. NOT covered: `--input <json>`, which carries the body inside a JSON
+# document; blocking it outright would also block ruleset and protection
+# writes that carry no prose.
 #
 # Covers the Bash-tool path; gh-wrapper.sh covers manual gh calls. The two are
 # deliberately redundant, so neither being bypassed lets text through.
@@ -52,8 +61,8 @@ cmd=$(printf '%s\n' "${input}" | jq -r '.tool_input.command // empty')
 #
 # Handled: command separators (`&&`, `||`, `;`, `|`, `&`, `(`, `{`, backtick),
 # the `then`/`do` keywords, an opening quote of any kind, `env`/`command`/
-# `sudo` wrappers, a leading path on the binary, and global options before the
-# subcommand.
+# `sudo` wrappers, a leading path on the binary, global options before the
+# subcommand, and backslash-continued lines (_join_continuations, below).
 #
 # NOT handled, and not closeable at this layer: aliases and shell functions,
 # obfuscation through variables (`G=git; $G commit`), and any construction that
@@ -69,9 +78,87 @@ _wrap="((env|command|sudo)[[:space:]]+)*"
 _path="([^[:space:]|;&(){${bt}]*/)?"
 _optval="(\"[^\"]*\"[[:space:]]+|'[^']*'[[:space:]]+|[^-][^|;&${bt}[:space:]]*[[:space:]]+)?"
 
+# Join backslash-continued lines into one logical line, as bash does, before
+# anything else looks at the command (claude-config#595). The hook judges one
+# line at a time, so without this `gh pr create --title t \` followed by
+# `--body x` put the body flag on a line with no verb, and it was never checked.
+#
+# The join follows bash: `\<newline>` is removed outright (no space), outside
+# quotes and inside double quotes. It is NOT a continuation, and the newline
+# stays, inside single quotes or $'...', in a heredoc body (quoted delimiter
+# or not -- heredoc text is prose, and joining it would put its words in
+# command position), at the end of a comment, or when the backslash is itself
+# escaped (`\\<newline>`). A plain newline still ends the line: only
+# continuations join, so an approved path on one line cannot vouch for a
+# command on another.
+#
+# Heredocs: `<<WORD`, `<<-WORD` and the quoted spellings open a body on the
+# next line, up to a line that is exactly WORD (leading tabs removed for
+# `<<-`). Several on one line are read in order. Same caveat as below: a
+# character scanner, not a parser, so `$(...)` nesting and the like are
+# approximated. One known miss: a shift inside arithmetic (`$((1<<2))`) reads
+# as a heredoc operator, and no line ever closes it, so continuations after
+# that line are not joined.
+_join_continuations() {
+  awk '
+    function flush() { print buf; buf = "" }
+    BEGIN { q = 0; hd = 0; np = 0; buf = ""; joined = 0 }
+    {
+      line = $0
+      if (hd) {
+        print line
+        chk = line
+        if (hstrip[hd]) sub(/^\t+/, "", chk)
+        if (chk == hdelim[hd]) { hd++; if (hd > np) { hd = 0; np = 0 } }
+        next
+      }
+      n = length(line); joined = 0; i = 1
+      while (i <= n) {
+        c = substr(line, i, 1)
+        if (q == 1) { buf = buf c; if (c == "\047") q = 0; i++; continue }
+        if (q == 3) {
+          if (c == "\\") { buf = buf substr(line, i, 2); i += 2; continue }
+          buf = buf c; if (c == "\047") q = 0; i++; continue
+        }
+        if (c == "\\") {
+          if (i == n) { joined = 1; i++; continue }
+          buf = buf substr(line, i, 2); i += 2; continue
+        }
+        if (q == 2) { buf = buf c; if (c == "\"") q = 0; i++; continue }
+        prev = (buf == "") ? "" : substr(buf, length(buf), 1)
+        if (c == "#" && (prev == "" || prev ~ /[[:space:];&|()<>]/)) {
+          buf = buf substr(line, i); break
+        }
+        if (c == "\047") { q = 1; buf = buf c; i++; continue }
+        if (c == "\"") { q = 2; buf = buf c; i++; continue }
+        nx = substr(line, i + 1, 1)
+        if (c == "$" && nx == "\047") { q = 3; buf = buf "$\047"; i += 2; continue }
+        if (c == "<" && nx == "<" && prev != "<" && substr(line, i + 2, 1) != "<") {
+          rest = substr(line, i + 2); strip = 0
+          if (substr(rest, 1, 1) == "-") { strip = 1; rest = substr(rest, 2) }
+          sub(/^[ \t]+/, "", rest)
+          if (match(rest, /^[^ \t;&|()<>]+/)) {
+            w = substr(rest, 1, RLENGTH)
+            gsub(/[\047"\\]/, "", w)
+            if (w != "") { np++; hdelim[np] = w; hstrip[np] = strip }
+          }
+          buf = buf "<<"; i += 2; continue
+        }
+        buf = buf c; i++
+      }
+      if (joined) next
+      flush()
+      if (q == 0 && np > 0) hd = 1
+    }
+    END { if (joined || buf != "") flush() }
+  '
+}
+
+_joined=$(printf '%s\n' "${cmd}" | _join_continuations)
+
 # `env FOO=1 git commit` puts an assignment between the wrapper and the binary,
 # which the wrapper arm does not consume. Normalize it to the bare keyword.
-_scan=$(printf '%s\n' "${cmd}" | sed -E 's/(^|[[:space:]])env[[:space:]]+([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*/\1env /g')
+_scan=$(printf '%s\n' "${_joined}" | sed -E 's/(^|[[:space:]])env[[:space:]]+([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*/\1env /g')
 
 # A leading assignment sits between the separator and the binary and defeats
 # the match. Without this pass, measured 2026-09-18, `PERSONIFY_OK=1 git
@@ -79,8 +166,25 @@ _scan=$(printf '%s\n' "${cmd}" | sed -E 's/(^|[[:space:]])env[[:space:]]+([A-Za-
 # typing its own name. Re-run that case against any matcher change.
 _scan=$(printf '%s\n' "${_scan}" | sed -E 's/(^|&&|\|\||;|\||&|\(|\{)[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)+/\1 /g')
 
+# The whole command on one line, for checks that must see past the per-line
+# segments _segments produces (see _gql_has_body).
+_scan_flat=$(printf '%s\n' "${_scan}" | tr '\n' ' ')
+readonly _scan_flat
+
 commit_re="${_sep}${_wrap}${_path}git[[:space:]]+(-[^[:space:]]+[[:space:]]+${_optval})*commit([[:space:]]|$)"
-gh_re="${_sep}${_wrap}${_path}gh[[:space:]]+(-[^[:space:]]+[[:space:]]+${_optval})*(pr|issue)[[:space:]]+(create|comment|edit)([[:space:]]|$)"
+gh_re="${_sep}${_wrap}${_path}gh[[:space:]]+(-[^[:space:]]+[[:space:]]+${_optval})*(pr[[:space:]]+(create|comment|edit|review)|issue[[:space:]]+(create|comment|edit))([[:space:]]|$)"
+api_re="${_sep}${_wrap}${_path}gh[[:space:]]+(-[^[:space:]]+[[:space:]]+${_optval})*api([[:space:]]|$)"
+
+# A `gh api` field named exactly `body`, in every spelling gh accepts:
+# `-f body=`, `-fbody=`, `--field body=`, `--field=body=`, `--raw-field body=`,
+# with the key=value optionally quoted. The leading space keeps `nobody=` and
+# the like out; the value runs to the next space.
+_api_body_re="[[:space:]](-f|-F|--field|--raw-field)(=|[[:space:]]+)?[\"']?body=[^[:space:]]*"
+
+# A GraphQL mutation that sets a body argument (addComment, addPullRequestReview
+# and friends) carries its text inside the query string. There is no file form
+# to verify: `-F query=@file` is already refused by hook-block-api-merge.sh.
+_gql_body_re="mutation.*[^[:alnum:]_]body[[:space:]]*:"
 
 # Split the line into segments at command separators, so each gated invocation
 # is judged on its own flags. Checking the line as a whole would let an
@@ -154,6 +258,13 @@ _verify_segment() {
     _deny "no message file named" "${surface}"
   fi
 
+  _verify_path "${path}" "${surface}"
+}
+
+# The shared tail of every file form: the path must be absolute, exist, and
+# hash to something approved.
+_verify_path() {
+  local path="$1" surface="$2"
   case "${path}" in
     /*) ;;
     *) _deny "path '${path}' is not absolute; git and this hook would resolve it differently" "${surface}" ;;
@@ -165,6 +276,51 @@ _verify_segment() {
 
   "${GATE}" check "${path}" ||
     _deny "the bytes in ${path} do not match anything approved" "${surface}"
+}
+
+# Is this `gh api` segment writing prose? A `body` field or a GraphQL mutation
+# with a body argument. Anything else (GETs, state/label/title fields, read-only
+# queries) is not a text surface.
+_api_is_gated() {
+  printf '%s\n' "$1" | grep -qE -- "${_api_body_re}" || _gql_has_body "$1"
+}
+
+# A GraphQL query is usually written across several lines inside a quoted
+# string (plain newlines, not continuations, so _join_continuations leaves
+# them), and _segments puts each line in its own segment, so the mutation and
+# its `body:` sit on lines with no `gh api` on them. Measured 2026-09-25: a two-line addComment passed.
+# For a graphql segment, test the whole command (_scan_flat, set once at the
+# top) rather than the segment. Testing only the segment is the bug this
+# fixes. A match elsewhere on the line blocks too, which is the safe direction.
+_gql_has_body() {
+  printf '%s\n' "$1" | grep -qE 'graphql' || return 1
+  printf '%s\n' "${_scan_flat}" | grep -qE -- "${_gql_body_re}"
+}
+
+# Verify every body field in one `gh api` segment. Only `-F/--field body=@<abs>`
+# can pass: that form makes gh read the value from the file, so the file's bytes
+# are what gets posted. `-f/--raw-field` never expands `@`, so `-f body=@/x`
+# posts the literal string and is inline text like any other value.
+_verify_api_segment() {
+  local seg="$1" surface="API body" m flag val matches
+  if _gql_has_body "${seg}"; then
+    _deny "GraphQL mutation carries its body inline; use gh pr/issue comment --body-file" "${surface}"
+  fi
+  matches="$(printf '%s\n' "${seg}" | grep -oE -- "${_api_body_re}" || true)"
+  while IFS= read -r m; do
+    [[ -n "${m}" ]] || continue
+    flag="$(printf '%s\n' "${m}" | sed -E 's/^[[:space:]]*(--raw-field|--field|-f|-F).*/\1/')"
+    val="${m#*body=}"
+    val="${val//\"/}"
+    val="${val//\'/}"
+    case "${flag}" in
+      -F | --field) ;;
+      *) _deny "text given inline (${flag} never reads a file); use -F body=@<absolute path>" "${surface}" ;;
+    esac
+    [[ "${val}" == @* ]] ||
+      _deny "text given inline; only -F body=@<absolute path> can be verified" "${surface}"
+    _verify_path "${val#@}" "${surface}"
+  done <<<"${matches}"
 }
 
 # A time-boxed suspension (gate-review.sh suspended; Andrew writes the file by
@@ -192,6 +348,11 @@ while IFS= read -r seg; do
     if printf '%s\n' "${seg}" | grep -qE '[[:space:]](-b|--body|-F|--body-file)([[:space:]]|=)'; then
       _suspended && exit 0
       _verify_segment "${seg}" "PR/issue body" '-b|--body' '-F|--body-file'
+    fi
+  elif printf '%s\n' "${seg}" | grep -qE "${api_re}"; then
+    if _api_is_gated "${seg}"; then
+      _suspended && exit 0
+      _verify_api_segment "${seg}"
     fi
   fi
 done < <(_segments)

@@ -281,6 +281,157 @@ else
 fi
 
 echo
+echo "=== prongs 3+4: credentials neither the env nor gitleaks knows (dev-env#156) ==="
+# A live Pangram key reached a transcript: fetched with `op read` (so no env
+# var held it) and printed bare (so gitleaks' generic-api-key rule, which needs
+# `key = "..."` context, never fired). Every fixture below is synthetic,
+# assembled at runtime, and was measured to produce no gitleaks finding bare.
+#
+# Assembled rather than written out for two reasons: a vendor-shaped literal
+# trips GitHub push protection, and once prong 4 is live an agent reading this
+# file would get literal fixtures back REDACTED (see the EDITING WARNING above).
+# `${BODY}` in the source is not matched by any prong-4 pattern.
+BODY="$(printf 'a1b2c3d4%.0s' 1 2 3 4 5 6 7 8)"
+
+# run_cmd_hook <command> <stdout> [stderr] -- a Bash result for that command.
+# Credential env vars are stripped so prong 1 cannot take the credit.
+run_cmd_hook() {
+  jq -nc --arg cmd "$1" --arg out "$2" --arg err "${3:-}" \
+    '{tool_name:"Bash", tool_input:{command:$cmd},
+      tool_response:{stdout:$out, stderr:$err, interrupted:false,
+                     isImage:false}}' \
+    | env -u GH_TOKEN -u GH_TOKEN_SWM -u GH_TOKEN_NOS -u GH_TOKEN_TWM \
+      -u OP_SERVICE_ACCOUNT_TOKEN python3 "${HOOK}" 2>/dev/null
+}
+
+# check_cmd_redacted <desc> <command> <stdout> <value>
+check_cmd_redacted() {
+  local desc="$1" out
+  out="$(run_cmd_hook "$2" "$3")"
+  if [[ -n "${out}" ]] && ! grep -qF "$4" <<<"${out}" \
+    && jq -e '.hookSpecificOutput.updatedToolOutput
+              | has("stdout") and has("interrupted")' <<<"${out}" \
+      >/dev/null 2>&1; then
+    printf 'PASS: %s\n' "${desc}"
+    pass=$((pass + 1))
+  else
+    printf 'FAIL: %s (value survived, or no replacement emitted)\n' "${desc}"
+    fail=$((fail + 1))
+  fi
+}
+
+# check_cmd_untouched <desc> <command> <stdout>
+check_cmd_untouched() {
+  local desc="$1" out
+  out="$(run_cmd_hook "$2" "$3")"
+  if [[ -z "${out}" ]]; then
+    printf 'PASS: %s\n' "${desc}"
+    pass=$((pass + 1))
+  else
+    printf 'FAIL: %s (mangled ordinary output)\n' "${desc}"
+    fail=$((fail + 1))
+  fi
+}
+
+echo "--- prong 4: vendor-prefixed keys printed bare (e.g. cat of a .env) ---"
+while IFS='|' read -r vendor value; do
+  check_cmd_redacted "${vendor} key, bare" 'cat .env' \
+    "${value}" "${value}"
+done <<EOF
+Pangram sk-pg-|sk-pg-${BODY}
+OpenAI sk-proj-|sk-proj-${BODY}
+Anthropic OAuth sk-ant-oat01-|sk-ant-oat01-${BODY}
+1Password service account ops_|ops_eyJ${BODY}
+Sentry org sntrys_|sntrys_eyJ${BODY}
+Google OAuth ya29.|ya29.${BODY}
+Context7 ctx7sk-|ctx7sk-${BODY}
+Mercury secret-token:|secret-token:mercury_production_${BODY}
+EOF
+
+# The same key reached through Read, not Bash.
+PG_KEY="sk-pg-${BODY}"
+pg_read="$(jq -nc --arg c "PANGRAM_API_KEY=${PG_KEY}" \
+  '{tool_name:"Read", tool_input:{file_path:"/tmp/.env"},
+    tool_response:{type:"text",
+      file:{filePath:"/tmp/.env", content:$c, numLines:1,
+            startLine:1, totalLines:1}}}' \
+  | env -u GH_TOKEN -u GH_TOKEN_SWM -u GH_TOKEN_NOS -u GH_TOKEN_TWM \
+    -u OP_SERVICE_ACCOUNT_TOKEN python3 "${HOOK}" 2>/dev/null)"
+if [[ -n "${pg_read}" ]] && ! grep -qF "${PG_KEY}" <<<"${pg_read}"; then
+  printf 'PASS: a Pangram key in Read output is redacted\n'
+  pass=$((pass + 1))
+else
+  printf 'FAIL: a Pangram key in Read output survived\n'
+  fail=$((fail + 1))
+fi
+
+echo "--- prong 3: stdout of a credential-printing command, any format ---"
+# No vendor prefix at all: the point of prong 3 is that the format of what
+# came back does not matter. Nothing but the command identifies it.
+NOFMT="$(printf 'q7Rm%.0s' 1 2 3 4 5 6 7 8 9 10)"
+check_cmd_redacted 'op read (the dev-env#156 leak)' \
+  'op read "op://Automation/Pangram/credential"' "${NOFMT}" "${NOFMT}"
+check_cmd_redacted 'op read with stderr silenced' \
+  'op read op://v/i/f 2>/dev/null' "${NOFMT}" "${NOFMT}"
+check_cmd_redacted 'op read piped through a passthrough' \
+  'op read op://v/i/f | head -c 200' "${NOFMT}" "${NOFMT}"
+check_cmd_redacted 'op read captured and echoed' \
+  "echo \"key=${D}(op read op://v/i/f)\"" "key=${NOFMT}" "${NOFMT}"
+check_cmd_redacted 'op read after another command' \
+  'cd /tmp && op read op://v/i/f' "${NOFMT}" "${NOFMT}"
+check_cmd_redacted 'op item get --reveal' \
+  'op item get Pangram --fields credential --reveal' "${NOFMT}" "${NOFMT}"
+check_cmd_redacted 'security find-generic-password -w' \
+  'security find-generic-password -a me -s pangram -w' "${NOFMT}" "${NOFMT}"
+check_cmd_redacted 'gcloud auth print-access-token' \
+  'gcloud auth print-access-token' "${NOFMT}" "${NOFMT}"
+check_cmd_redacted 'gh auth token' 'gh auth token' "${NOFMT}" "${NOFMT}"
+check_cmd_redacted 'bash -c wrapping op read' \
+  'bash -c "op read op://v/i/f"' "${NOFMT}" "${NOFMT}"
+
+# `security -g` prints the password to STDERR, not stdout.
+g_out="$(run_cmd_hook 'security find-generic-password -s pangram -g' \
+  '' "password: \"${NOFMT}\"")"
+if [[ -n "${g_out}" ]] && ! grep -qF "${NOFMT}" <<<"${g_out}"; then
+  printf 'PASS: security -g password on stderr is redacted\n'
+  pass=$((pass + 1))
+else
+  printf 'FAIL: security -g password on stderr survived\n'
+  fail=$((fail + 1))
+fi
+
+echo "--- negative: ordinary output and non-leaking commands are left alone ---"
+check_cmd_untouched 'op read redirected to a file, then ls' \
+  'op read op://v/i/f > /tmp/k && ls' 'k  notes.md'
+check_cmd_untouched 'op read captured into a variable' \
+  "v=\"${D}(op read op://v/i/f)\"; echo done" 'done'
+check_cmd_untouched 'op read piped into a consumer' \
+  'op read op://v/i/f | gh auth login --with-token' 'Logged in'
+check_cmd_untouched 'op read used inside a curl header' \
+  "curl -s -H \"Authorization: Bearer ${D}(op read op://v/i/f)\" https://x" \
+  '{"status":"ok"}'
+check_cmd_untouched '"op read" as a quoted string, not a command' \
+  'echo "run op read first"' 'run op read first'
+check_cmd_untouched 'grep for the phrase op read' \
+  "grep -n 'op read' notes.md" '3:use op read to fetch it'
+check_cmd_untouched 'op item get without --reveal/--fields' \
+  'op item get Pangram' 'Title: Pangram'
+check_cmd_untouched 'gh auth status without --show-token' \
+  'gh auth status' 'Logged in to github.com'
+# Output full of long hex, UUIDs, base64 and prose that NAMES every prefix.
+# Nothing here is a credential; prong 4 must not widen into mangling it.
+check_cmd_untouched 'hashes, UUIDs and prose naming the prefixes' \
+  'git log -3; cat notes.md' \
+  "commit 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+Merge: 1a2b3c4 5d6e7f8
+id 123e4567-e89b-12d3-a456-426614174000
+digest sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+Pangram keys start with sk-pg- and OpenAI ones with sk-proj- or sk-svcacct-.
+Claude Code OAuth tokens look like sk-ant-oat01-... and 1Password ones ops_eyJ...
+see desk-proj-planning-meeting-notes-2026-09-24-final-version-v2 for the plan
+Google tokens begin ya29. and Sentry org tokens sntrys_ -- rotate both."
+
+echo
 echo "=== malformed and edge-case input must not crash ==="
 for bad in '' 'not json at all' '{}' '{"tool_response": null}' \
   '{"tool_response": {"stdout": 42}}'; do

@@ -22,7 +22,8 @@
 □ AI review clean: git hook auto-runs code-reviewer agent (FREE, local)
 □ Adversarial review clean: git hook auto-runs adversarial-reviewer on EVERY commit (FREE, local)
 □ Verify hook review ran AND matches this repo: after EVERY commit, read the log header:
-    head -6 $(git rev-parse --git-dir)/last-review-result.log
+    head -6 "$(git -C /abs/path/to/repo rev-parse --absolute-git-dir)/last-review-result.log"
+  (Plain --git-dir is relative to the cwd, so it can read another repo's log.)
   Check ALL of the following — a timestamp alone is not enough:
   1. Timestamp within ~60 seconds (hook ran for this commit)
   2. repo: field matches this repo's root path

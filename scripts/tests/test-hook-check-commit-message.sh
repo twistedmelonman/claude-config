@@ -103,6 +103,45 @@ check "Fail-open: \$(cmd) without heredoc" 0 "${inp}"
 inp="$(make_input "git commit -m \"\`some_backtick_sub\`\"")"
 check "Fail-open: backtick substitution" 0 "${inp}"
 
+# === -F / --file: the summary is read from the named file (claude-config#548) ===
+# The approval gate routes every commit through `-F <approved file>`, so a
+# checker that only reads -m no longer sees any commit made the normal way.
+MSGDIR="$(mktemp -d)"
+trap 'rm -rf "${MSGDIR}"' EXIT
+printf 'not a conventional summary\n\nbody text\n' >"${MSGDIR}/bad.txt"
+printf 'fix(gate): a conventional summary\n\nbody text\n' >"${MSGDIR}/good.txt"
+printf '\n\nfix: summary after blank lines\n' >"${MSGDIR}/leading-blank.txt"
+
+inp="$(make_input "git commit -F ${MSGDIR}/bad.txt")"
+check "Blocked: -F absolute file with malformed summary" 2 "${inp}"
+inp="$(make_input "git commit --file=${MSGDIR}/bad.txt")"
+check "Blocked: --file= absolute file with malformed summary" 2 "${inp}"
+inp="$(make_input "git commit --file ${MSGDIR}/bad.txt")"
+check "Blocked: --file absolute file with malformed summary" 2 "${inp}"
+inp="$(make_input "git commit -F \"${MSGDIR}/bad.txt\"")"
+check "Blocked: quoted -F absolute file with malformed summary" 2 "${inp}"
+inp="$(make_input "git -C /path commit -F ${MSGDIR}/bad.txt")"
+check "Blocked: git -C /path commit -F malformed" 2 "${inp}"
+inp="$(make_input "git commit -F ${MSGDIR}/good.txt")"
+check "Valid: -F absolute file with conventional summary" 0 "${inp}"
+inp="$(make_input "git commit --file=${MSGDIR}/good.txt")"
+check "Valid: --file= absolute file with conventional summary" 0 "${inp}"
+inp="$(make_input "git commit -F ${MSGDIR}/leading-blank.txt")"
+check "Valid: -F file whose summary follows blank lines" 0 "${inp}"
+# Only the commit's own -F counts. A later command's -F (gh --body-file
+# short form) names a PR body, which is not a conventional commit.
+inp="$(make_input "git commit -F ${MSGDIR}/good.txt && gh pr create -F ${MSGDIR}/bad.txt")"
+check "Valid: a chained gh -F is not read as the commit message" 0 "${inp}"
+inp="$(make_input "gh pr create -F ${MSGDIR}/bad.txt")"
+check "Pass-through: gh -F alone is not a commit" 0 "${inp}"
+# Unreadable from here: fail open, the commit-msg hook still gates.
+inp="$(make_input 'git commit -F relative/msg.txt')"
+check "Fail-open: relative -F path" 0 "${inp}"
+inp="$(make_input 'git commit -F -')"
+check "Fail-open: -F - (stdin)" 0 "${inp}"
+inp="$(make_input "git commit -F ${MSGDIR}/missing.txt")"
+check "Fail-open: -F absolute path that does not exist" 0 "${inp}"
+
 echo ""
 echo "Results: ${pass} passed, ${fail} failed"
 [[ "${fail}" -eq 0 ]]

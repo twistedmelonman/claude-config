@@ -48,7 +48,7 @@ entries are omitted here.
 | PreToolUse `Bash` | `~/.claude/scripts/hook-block-all.sh` (chain below) |
 | PreToolUse `Write`, `Edit` | `hook-block-merge-locks-write.sh`: blocks writes into `merge-locks/`, `gate-review/`, and personify's `checks/` and `stamps/` |
 | PreToolUse `EnterWorktree` | `hook-block-enter-worktree.sh` |
-| PostToolUse `Bash\|Read` | `hook-redact-secret-output.py` |
+| PostToolUse `Bash\|Read` | `hook-redact-secret-output.py`: redacts env secret values, gitleaks findings, vendor prefixes gitleaks lacks, and the whole stdout of credential-printing commands (`op read`, `security -w`, ...) |
 | Stop, SubagentStop | `hook-budget-guard.sh` |
 
 `hook-block-all.sh` runs these in order and stops at the first block:
@@ -78,6 +78,18 @@ Commit messages and PR/issue bodies need Andrew's visual approval.
 - Text must come from a file at an absolute path: `git commit -F` or
   `gh ... --body-file`. Inline `-m`/`--body`, relative paths, and `~`/`$VAR`
   paths are blocked. PR and issue titles are not gated.
+- Gated surfaces: `git commit`; `gh pr create|comment|edit|review` and
+  `gh issue create|comment|edit` when they carry a body flag; `gh api` when
+  it sends a `body` field or a GraphQL mutation with a `body:` argument. The
+  one verifiable `gh api` form is `-F body=@/absolute/path`. Not gated:
+  `gh api --input <json>`, `git tag -m`, `git notes`, `gh release --notes`.
+- The hook joins backslash-continued lines before it checks a command, so a
+  body flag on a continuation line is gated with its verb. It does not join
+  inside single quotes, heredoc bodies, or comments, where bash does not
+  either or where the text is prose.
+- `hook-check-commit-message.py` reads the summary from the file named by
+  `git commit -F <absolute path>` as well as from `-m`, so commits made
+  through the gate still get the conventional-commits pre-flight.
 - Enforced by `hook-block-personify.sh` for the Bash tool, and by
   `gh-wrapper.sh` (`_gh_wrapper_approval_gate`) for manual `gh` calls.
 - `stage` also refuses a file with no `~/.config/personify/checks/<sha256 of
@@ -176,7 +188,7 @@ This enforcement exists because of two incidents on 2026-02-24:
 After every commit, verify the hook ran by reading the log header:
 
 ```bash
-head -6 $(git rev-parse --git-dir)/last-review-result.log
+head -6 "$(git -C /abs/path/to/repo rev-parse --absolute-git-dir)/last-review-result.log"
 ```
 
 Check: timestamp within ~60s, repo matches, branch matches, commit matches HEAD.

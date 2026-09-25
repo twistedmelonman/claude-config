@@ -40,18 +40,55 @@ CONV_COMMIT_RE = re.compile(
 )
 
 
+# git as leading verb at cmd start or after a shell-operator boundary, with
+# optional interposed flags (-C /path, -c key=value, --no-pager) before the
+# `commit` subcommand.
+GIT_COMMIT_RE = re.compile(r"(?:^|[;&|(`])\s*git(?:\s+-\S+(?:\s+[^-]\S*)?)*\s+commit\b")
+
+
 def is_git_commit_with_m(cmd: str) -> bool:
     """Command invokes `git commit` (optionally with flags) AND uses -m/--message."""
-    # git as leading verb at cmd start or after a shell-operator boundary,
-    # with optional interposed flags (-C /path, -c key=value, --no-pager)
-    # before the `commit` subcommand.
-    git_commit = re.search(
-        r"(?:^|[;&|(`])\s*git(?:\s+-\S+(?:\s+[^-]\S*)?)*\s+commit\b",
-        cmd,
-    )
-    if not git_commit:
+    if not GIT_COMMIT_RE.search(cmd):
         return False
     return bool(re.search(r"(?:\s|^)(-m|--message)(\s|=)", cmd))
+
+
+def extract_file_summary(cmd: str) -> str | None:
+    """First non-blank line of the file named by the commit's -F/--file.
+
+    The approval gate (hook-block-personify.sh) sends every commit through
+    `-F <approved file>`, so without this the -m-only check above never ran on
+    a normal commit (claude-config#548).
+
+    Only the commit's own arguments are searched: the text after `commit` up to
+    the next shell separator, so a chained `gh pr create -F <body>` is not read
+    as a commit message. Returns None (fail open, the commit-msg hook still
+    gates) for anything this hook cannot read the same way git will: a
+    relative path, `-` for stdin, or a missing or unreadable file.
+    """
+    git_commit = GIT_COMMIT_RE.search(cmd)
+    if not git_commit:
+        return None
+    args = re.split(r"&&|\|\||[;|\n]", cmd[git_commit.end():], maxsplit=1)[0]
+    flag = re.search(
+        r"(?:^|\s)(?:-F\s*|--file(?:=|\s+))(?:\"([^\"]+)\"|'([^']+)'|([^\s\"']+))",
+        args,
+    )
+    if not flag:
+        return None
+    path = next(g for g in flag.groups() if g is not None)
+    if not path.startswith("/"):
+        return None
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                # git's default cleanup for -F is `whitespace`: leading blank
+                # lines go, `#` lines stay. Mirror that.
+                if line.strip():
+                    return line.strip()
+    except OSError:
+        return None
+    return None
 
 
 def extract_summary_candidate(cmd: str) -> str | None:
@@ -127,10 +164,10 @@ def main() -> int:
     if not cmd:
         return 0
 
-    if not is_git_commit_with_m(cmd):
-        return 0
-
-    summary = extract_summary_candidate(cmd)
+    if is_git_commit_with_m(cmd):
+        summary = extract_summary_candidate(cmd)
+    else:
+        summary = extract_file_summary(cmd)
     if summary is None:
         return 0  # Ambiguous — let commit-msg hook gate.
 

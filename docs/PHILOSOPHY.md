@@ -95,9 +95,11 @@ ran is worth more than a printed one that did not.
 - Avoid premature abstractions (need 3 real examples before extracting)
 - No clever tricks—choose the boring solution
 
-### Chesterton's Fence
+### Know the Reason Before You Change It
 
-Before removing or changing anything, articulate why it exists. Can't explain it? You don't understand it well enough to touch it.
+Before removing or changing anything, find out why it exists: what it prevents, and whether that still applies. Can't explain it? You don't understand it well enough to touch it.
+
+State the reason itself, not the name of a principle. A named principle is not an explanation, and it ends the conversation the reason should start. When the reason was never written down, write it where the next reader will look.
 
 ---
 
