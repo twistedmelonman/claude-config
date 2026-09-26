@@ -207,13 +207,17 @@ Every run, after writing the daily note. A week is an ISO week, Monday–Sunday,
 `YYYY-Www` is the ISO week-numbering year and week (`date +%G-W%V`), which differs from
 the calendar year around January 1.
 
-For every **completed** week that has daily notes in `eod/` but no `week-YYYY-Www.md`,
-write `~/kb/topics/meetings/eod/week-YYYY-Www.md`. The current week is not complete
-until its Sunday ends; do not write its rollup early.
+For every **due** week that has daily notes in `eod/` but no `week-YYYY-Www.md`,
+write `~/kb/topics/meetings/eod/week-YYYY-Www.md`. Andrew works Monday–Friday, so a
+week is due from its Friday run onward (today PT is Friday or later in that week, or
+the week has ended). A missed Friday run is caught up by the next run. Before Friday,
+do not write the current week's rollup.
 
 A rollup that already exists but lacks a `###` subsection for one of its week's daily
-notes (a late or rerun note) gets that subsection inserted in date order, with `updated`
-bumped. Existing subsections are left as they are.
+notes (a late or weekend note) gets that subsection inserted in date order, with
+`updated` bumped. Existing subsections are left as they are, with one exception: on a
+same-day rerun, replace the subsection for today's note. Whenever a subsection is
+inserted or replaced, recompute **Carried over** from the week's last daily note.
 
 ```markdown
 ---
