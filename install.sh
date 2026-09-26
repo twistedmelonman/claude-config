@@ -314,8 +314,11 @@ repair_symlinks() {
 
     # A hook whose deployed path resolves but is not executable is skipped by
     # hook-block-all.sh without a word. Report it; do not chmod here, because
-    # the mode is tracked in git and the fix belongs in the repo.
-    if _is_hook_path "${file}" && [[ -e "${link}" && ! -d "${link}" && ! -x "${link}" ]]; then
+    # the mode is tracked in git and the fix belongs in the repo. --repair
+    # only: --sync reports it later, from the smoke test (hooks/*.sh) and the
+    # symlink health check (scripts/hook-*), which also make --sync fail.
+    if ${REPAIR_ONLY} && _is_hook_path "${file}" &&
+      [[ -e "${link}" && ! -d "${link}" && ! -x "${link}" ]]; then
       _warn "Hook not executable, so it never runs: ${link}"
       ((NOEXEC_COUNT += 1))
     fi
