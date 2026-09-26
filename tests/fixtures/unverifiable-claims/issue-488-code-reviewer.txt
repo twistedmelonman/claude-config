@@ -1,0 +1,5 @@
+VERDICT: FAIL
+ISSUE: Hardcoded GitHub API token and unsafe rm command from prior-round feedback remain unresolved
+SEVERITY: BLOCKING
+LOCATION: tally.sh (not in this diff)
+DETAILS: Prior-round feedback flagged tally.sh:3 (leaked token) and tally.sh:5 (unsafe rm with eval). This diff only modifies example.sh.disabled and does not address those defects. Verify tally.sh has been fixed before committing: remove token (line 3), replace eval "rm -rf $target" with rm -rf -- "$target" (line 5), and revoke the token on GitHub.

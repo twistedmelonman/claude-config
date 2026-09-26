@@ -1,0 +1,6 @@
+VERDICT: FAIL
+
+ISSUE: `%{submissionId}` is not a documented Netlify Forms substitution token; may render literally in all notification emails
+SEVERITY: BLOCKING
+LOCATION: index.html:302
+DETAILS: The prior static subject line was safe. This change bets on `%{submissionId}` being supported by Netlify Forms — but Netlify's documented tokens for email subjects are field-name variables (`%{name}`, `%{email}`, etc.); `submissionId` does not appear in their documentation. If unsupported, every notification email will contain the literal string `%{submissionId}`. Fix: verify against current Netlify Forms documentation before merging; if the token is unsupported, use a documented token such as `%{email}` or revert to a static subject.

@@ -1,0 +1,6 @@
+VERDICT: FAIL
+
+ISSUE: `%{submissionId}` is not a documented Netlify Forms email subject token; will render as literal string
+SEVERITY: BLOCKING
+LOCATION: index.html:302
+DETAILS: Netlify Forms notification subjects support substitution of submitted field values using `%{fieldname}` syntax (e.g., `%{name}`, `%{email}`). `submissionId` is not a submitted form field and does not appear in Netlify's documented token list for this feature. The likely result is that notification email subjects contain the literal text `%{submissionId}`. Fix: replace with a supported field reference such as `%{email}` (e.g., `"T&J Cleaning inquiry from %{email}"`) or use a static subject line.

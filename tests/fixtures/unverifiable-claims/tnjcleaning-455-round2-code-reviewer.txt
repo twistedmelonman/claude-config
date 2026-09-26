@@ -1,0 +1,7 @@
+VERDICT: FAIL
+ISSUE: `%{submissionId}` is not a supported Netlify Forms substitution token; literal string will appear in email subjects
+SEVERITY: BLOCKING
+LOCATION: index.html:302
+DETAILS: The prior review (PRIOR ROUND FEEDBACK) already identified this exact issue: Netlify Forms email notifications support only documented tokens (`%{name}`, `%{email}`, `%{phone}`, `%{message}`, and form field names). The developer's commit message claims `%{submissionId}` is "a documented Netlify Forms subject variable" and was "verified live against a deploy preview," but this contradicts the established blocking finding and Netlify's official documentation.
+
+The developer's assertion of live verification cannot override the documented constraint. The fix remains: use a supported token (e.g., `%{email}`) or remove the placeholder entirely and use a static subject line like `"T&amp;J Cleaning inquiry from tnjcleaning.com"`. The current change introduces the defect into the codebase; it was not pre-existing.

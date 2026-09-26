@@ -1,0 +1,10 @@
+VERDICT: FAIL
+ISSUE: Hardcoded GitHub API token committed in script
+SEVERITY: BLOCKING
+LOCATION: tally.sh:3
+DETAILS: Line 3 assigns a literal ghp_ token to GITHUB_TOKEN. This file is not included in the current diff, so I cannot verify if it has been removed. Check the current state of tally.sh:3 and revoke the token on GitHub immediately if present.
+ISSUE: Unsafe rm with eval
+SEVERITY: BLOCKING
+LOCATION: tally.sh:5
+DETAILS: Line 5 uses eval "rm -rf $target" which expands untrusted input unsafely. This file is not included in the current diff, so I cannot verify if it has been fixed. Replace with: rm -rf -- "$target"
+

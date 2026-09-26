@@ -1,0 +1,10 @@
+VERDICT: FAIL
+ISSUE: Hardcoded GitHub API token in staged diff
+SEVERITY: BLOCKING
+LOCATION: tally.sh:3
+DETAILS: Previous review flagged a hardcoded `ghp_` token at tally.sh:3. This diff does not touch tally.sh, so the token remains committed. Before this extension file is reviewed, revoke the token on GitHub and remove it from tally.sh.
+ISSUE: Unsafe `rm -rf` with eval in staged diff
+SEVERITY: BLOCKING
+LOCATION: tally.sh:5
+DETAILS: Previous review flagged `eval "rm -rf $target"` at tally.sh:5. This diff does not touch tally.sh, so the unsafe pattern remains. Before this extension file is reviewed, fix tally.sh:5 to use `rm -rf -- "$target"`.
+

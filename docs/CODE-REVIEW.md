@@ -211,14 +211,27 @@ costs one command. A false pass ships the defect.
 
 - **Security exemption.** Neither check fires when the finding names a
   security or data-loss class: a token, a secret, a credential, auth,
-  logging, an injection, `eval`, `rm -rf`, or a CVE. This applies to the
-  location check too, so the literal #488 finding (a leaked token in a file
-  that never existed) still blocks. The arbiter stays its backstop.
+  logging, an injection, `eval`, `rm -rf`, or a CVE. Two narrow exceptions:
+  - `token` in the template sense ("substitution token", "`%{x}` token",
+    "the token is unsupported") is not a credential word. Every other
+    security word still exempts the finding, and so does `token` used any
+    other way (`GITHUB_TOKEN`, "the API token").
+  - **Phantom file.** A security finding is downgraded when every file its
+    LOCATION names exists nowhere: not in the diff, not in `HEAD`, not in
+    the index or the worktree, and no tracked or untracked file anywhere has
+    that basename. It still blocks when its ISSUE or LOCATION line names a
+    changed file, when it quotes code from the diff's added lines, or when
+    it reads as a missed edit. This is the literal #488 finding: a leaked
+    token and `eval` in `tally.sh`, carried in from prior-round feedback,
+    in a repository that never had that file. A security finding against a
+    file that does exist, even outside the diff, still blocks.
 - **External behavior.** A named third-party platform must be the subject of
   the negative claim, for example "Netlify Forms does not support this
   syntax" or "macOS BSD sed does not support POSIX bracket expressions".
-  "The new parser does not support that flag" names no platform, so it still
-  blocks.
+  The platform may also follow the negation: "`%{submissionId}` is not a
+  supported Netlify Forms substitution token", the wording of seven of the
+  eight recorded #455 blocks. "The new parser does not support that flag" names no
+  platform, so it still blocks.
 - **Location.** The check fires only when LOCATION holds a file name with an
   extension and nothing uncertain. A glob, a directory, or an extensionless
   path is uncertain. The check never fires when the finding mentions a
@@ -226,7 +239,9 @@ costs one command. A false pass ships the defect.
   backslash paths, and names with spaces or non-ASCII characters. It also
   never fires when the finding says the change should have edited a file,
   for example "settings.json has no entry for the new hook", because such a
-  file is outside the diff by definition. The script reads the diff headers
+  file is outside the diff by definition. A sentence that only says the file
+  is outside the diff ("this file is not included in the current diff") is
+  not read as a missed edit. The script reads the diff headers
   with any prefix style and decodes git's quoted paths.
 - **Block boundaries.** A finding starts at any `ISSUE:` line, also after a
   number, a bullet, or markdown emphasis. A block with two `SEVERITY:` lines
