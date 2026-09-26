@@ -70,8 +70,12 @@ Commit messages and PR/issue bodies need Andrew's visual approval.
 
 - `scripts/gate-review.sh stage <name> <file>` queues text. `open` shows the
   batch in BBEdit and waits. Each batch gets its own file,
-  `batches/<repo>-<branch>-<nonce>.txt`, removed once approved or aborted. Approval is changing `# STATUS: PENDING` to
-  `APPROVED` and saving. `check <file>` exits 0 if the file matches any approval.
+  `batches/<repo>-<branch>-<nonce>.txt`, removed once approved. Any other
+  exit keeps it, and the next `open` for the same items starts from it;
+  `open` removes buffers untouched for a day (`GATE_REVIEW_BUFFER_TTL`,
+  seconds). Approval is changing `# STATUS: PENDING` to
+  `APPROVED` and saving. `ABORT` revokes only that batch's own items.
+  `check <file>` exits 0 if the file matches any approval.
 - `check` compares a content hash. A match is not consumed, so an identical
   repeat (for example a retry after a failed push) passes. Approvals expire
   30 minutes after they are written (`GATE_REVIEW_APPROVAL_TTL`, seconds),

@@ -42,6 +42,12 @@ APPROVED="${GATE_DIR}/approved"
 EDITOR_APP="${GATE_REVIEW_EDITOR:-BBEdit}"
 POLL_TIMEOUT="${GATE_REVIEW_TIMEOUT:-1800}"
 APPROVAL_TTL="${GATE_REVIEW_APPROVAL_TTL:-1800}"
+# How long a buffer left in batches/ is kept for a later open to carry
+# forward. A day, not APPROVAL_TTL: the buffer holds the reviewer's edits, and
+# 30 minutes would drop them over an ABORT-then-lunch. It must stay well above
+# POLL_TIMEOUT, because the sweep in _cmd_open covers every key, and a live
+# review's buffer is only as new as its last save.
+BUFFER_TTL="${GATE_REVIEW_BUFFER_TTL:-86400}"
 
 mkdir -p "${PENDING}" "${APPROVED}"
 
@@ -274,6 +280,28 @@ _prior_buffers() {
   return 0
 }
 
+# Remove buffers, on every key, whose last write is older than BUFFER_TTL.
+# Only an open with exactly a buffer's item set carries it forward, so a buffer
+# whose set changed, or whose branch was merged and deleted, was never removed:
+# batches/ grew, and each open on its key re-reported every one of them
+# (claude-config#614). Each removal is named, since it is the reviewer's text.
+# Only files shaped like a buffer (or its half-written .tmp) are touched; age
+# is mtime, as in _prune_expired, and an unreadable mtime is left alone.
+_prune_stale_buffers() {
+  local now f mtime
+  now="$(date +%s)"
+  for f in "${GATE_DIR}/batches/"*.txt "${GATE_DIR}/batches/"*.txt.tmp; do
+    [[ -f "${f}" && "${f##*/}" =~ ^[A-Za-z0-9._-]+-[0-9]+-[0-9]+\.txt(\.tmp)?$ ]] || continue
+    mtime="$(stat -c %Y "${f}" 2>/dev/null || stat -f %m "${f}" 2>/dev/null)" || continue
+    if ((now - mtime > BUFFER_TTL)); then
+      rm -f "${f}"
+      printf 'gate-review: removed stale buffer (untouched over %ss): %s\n' \
+        "${BUFFER_TTL}" "${f}" >&2
+    fi
+  done
+  return 0
+}
+
 _cmd_open() {
   local batch count waited=0 nonce status
 
@@ -290,6 +318,9 @@ _cmd_open() {
   # it approved, with no human involved at all.
   _refuse_if_open
 
+  # After the refusal, so no other open is live whose buffer this could take.
+  _prune_stale_buffers
+
   # Bound this batch to this process. _split_batch refuses a buffer carrying a
   # different id, so a stale poller cannot approve text it never wrote.
   nonce="$$-$(date +%s)"
@@ -301,7 +332,7 @@ _cmd_open() {
   # (observed 2026-09-25: a mistyped STATUS word, then a fresh open showing
   # the original text). Only a buffer for this repo/branch with exactly the
   # staged item names is a candidate; the newest one wins.
-  local work want cand prior="" skipped=()
+  local work want cand prior="" skipped=() batch_items=()
   work="$(mktemp -d)"
   want="$(find "${PENDING}" -type f -exec basename {} \; | sort)"
   local i=0
@@ -346,8 +377,12 @@ _cmd_open() {
     echo "#"
     echo "# BATCH: ${nonce}"
     # What each item was built from, so a later open can tell the reviewer's
-    # edits apart from a restage. Header lines: never approved.
+    # edits apart from a restage. Header lines: never approved. The same
+    # names, kept in memory, are what an ABORT revokes: not re-read from
+    # pending/, where another session may have staged since, and not from the
+    # buffer's header, which the reviewer can edit.
     for f in "${PENDING}"/*; do
+      batch_items+=("${f##*/}")
       echo "# ORIGIN ${f##*/}: $(_hash "${f}")"
     done
     if [[ -n "${prior}" ]]; then
@@ -401,7 +436,11 @@ _cmd_open() {
   mv "${batch}.tmp" "${batch}"
   KEPT_BATCH="${batch}"
   # A killed or interrupted wait leaves the buffer where it is; say where.
-  trap '_kept_note; exit 130' INT TERM HUP
+  # One trap per signal, each exiting 128 + its number, so a caller can tell
+  # a Ctrl-C from a kill: one shared `exit 130` reported TERM and HUP as INT.
+  trap '_kept_note; exit 130' INT
+  trap '_kept_note; exit 143' TERM
+  trap '_kept_note; exit 129' HUP
   if [[ -n "${prior}" ]]; then
     # Its text now lives in the new buffer, so the old file is redundant.
     rm -f "${prior}"
@@ -444,9 +483,16 @@ _cmd_open() {
   case "${CLASS}" in
     APPROVED) ;;
     ABORT)
-      # ABORT means "not approved", not "discard my text": approvals go, the
-      # buffer stays.
-      rm -f "${APPROVED:?}"/*
+      # ABORT means "not approved", not "discard my text": this batch's
+      # approvals go, the buffer stays. Only this batch's items: wiping all
+      # of approved/ silently revoked an unrelated approval (a PR body
+      # approved an hour earlier, or another session's), the same failure
+      # _split_batch already avoids (claude-config#613). Older approvals
+      # still expire after APPROVAL_TTL.
+      local item
+      for item in "${batch_items[@]}"; do
+        rm -f "${APPROVED:?}/${item}"
+      done
       _die "ABORT (STATUS read as '${status}'); nothing approved"
       ;;
     PENDING)
@@ -602,7 +648,7 @@ _split_batch() {
   # with nothing to show it had ever been granted. Each name is instead cleared
   # by _write_approved as it is rewritten, so a batch revokes only what it
   # restates, and anything older than APPROVAL_TTL expires on its own. ABORT
-  # still wipes everything -- that is the safe direction.
+  # follows the same rule: it revokes only the aborted batch's own items.
 
   # `|| [[ -n "${line}" ]]` catches a final line with no trailing newline.
   # Without it `read` returns false on that last line and the loop discards it,
