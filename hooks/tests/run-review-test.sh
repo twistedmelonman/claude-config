@@ -54,8 +54,10 @@
 #       mock was green while the gate would have hard-blocked every commit
 #   59-61. A BLOCKING finding the reviewer could not have verified does not
 #       block: a LOCATION outside the diff (#488) or an external-behavior claim
-#       (#455/#555); the same finding located in the diff still blocks, and a
-#       security finding outside the diff still blocks (60b)
+#       (#455/#555); the same finding located in the diff still blocks. A
+#       security finding against a file that exists nowhere does not block
+#       (60b), but one against a file that exists in the repo still does
+#       (60c, 60d)
 #   62-63. Full-diff mode puts the branch commit messages in the prompt (#489)
 
 set -euo pipefail
@@ -3454,8 +3456,15 @@ _t59_run() {
   local loc="$1" label="$2"
   local issue="${3:-off-by-one in the tally loop}"
   local details="${4:-The loop skips the last element.}"
+  local existing="${5:-}"
   _t59_rc=0
   setup_repo
+  if [[ -n "${existing}" ]]; then
+    # Leave a file the finding may name in the worktree, untracked and
+    # unstaged, so it exists in the repo but not in the reviewed diff.
+    mkdir -p "${REPO_DIR}/$(dirname "${existing}")"
+    printf 'TOKEN=abc\n' >"${REPO_DIR}/${existing}"
+  fi
   stage_small_change
   make_mock_claude "${TMPDIR_TEST}/mock${label}" 0 "VERDICT: FAIL
 
@@ -3484,12 +3493,33 @@ exit_t60="${_t59_rc}"
 assert_eq "#488 control: the same finding located in the diff still blocks" "1" "${exit_t60}"
 
 # #488's literal finding (a leaked token plus eval, against tally.sh) is a
-# security class, so the location check must NOT downgrade it: a reviewer
-# cannot launder a credential finding into a warning by misplacing it.
-_t59_run "tally.sh:14" 60b "Hardcoded GitHub API token and unsafe rm with eval" \
-  "A token is embedded and eval runs rm on untrusted input." >/dev/null
+# security class. It is downgraded only because tally.sh exists NOWHERE: not
+# in the diff, HEAD, the index, or the worktree. The DETAILS text is #488's
+# verbatim, with the changed file's name swapped in, so it keeps the mention
+# of a changed file that tied the original to the diff.
+_t59_run "tally.sh (not in this diff)" 60b "Hardcoded GitHub API token and unsafe rm command from prior-round feedback remain unresolved" \
+  "Prior-round feedback flagged tally.sh:3 (leaked token) and tally.sh:5 (unsafe rm with eval). This diff only modifies foo.sh and does not address those defects." >/dev/null
 exit_t60b="${_t59_rc}"
-assert_eq "#488: a security finding outside the diff still blocks" "1" "${exit_t60b}"
+log_t60b=$(cat "${TMPDIR_TEST}/test60b-review.log" 2>/dev/null || true)
+assert_eq "#488: a security finding against a file that exists nowhere does not block" "0" "${exit_t60b}"
+assert_contains \
+  "#488: the phantom-file downgrade is recorded in the review log" \
+  "downgraded: security finding against a file that exists nowhere" \
+  "${log_t60b}"
+
+# The same security finding still blocks when the file it names exists in
+# the repo, even outside the diff: a reviewer cannot launder a credential
+# finding into a warning by misplacing it onto a real file (claude-config#592).
+_t59_run "tally.sh:3" 60c "Hardcoded GitHub API token and unsafe rm with eval" \
+  "A token is embedded and eval runs rm on untrusted input." "tally.sh" >/dev/null
+exit_t60c="${_t59_rc}"
+assert_eq "#488 control: a security finding against a file that exists in the worktree still blocks" "1" "${exit_t60c}"
+
+# ...and when a file with that basename exists anywhere in the tree.
+_t59_run "tally.sh:3" 60d "Hardcoded GitHub API token and unsafe rm with eval" \
+  "A token is embedded and eval runs rm on untrusted input." "lib/tally.sh" >/dev/null
+exit_t60d="${_t59_rc}"
+assert_eq "#488 control: a security finding whose basename exists elsewhere in the tree still blocks" "1" "${exit_t60d}"
 
 # =========================================================
 # TEST 61: an external-behavior claim does not block end to end (#455/#555).

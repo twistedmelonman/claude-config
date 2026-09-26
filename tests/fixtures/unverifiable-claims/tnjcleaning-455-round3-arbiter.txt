@@ -1,0 +1,6 @@
+VERDICT: FAIL
+
+ISSUE: `%{submissionId}` is not a documented Netlify Forms subject variable and will likely render literally in notification emails
+SEVERITY: BLOCKING
+LOCATION: index.html:302
+DETAILS: The diff replaces a working static subject string with a template token (`%{submissionId}`) that does not appear in Netlify's documented variable list for email subject customization (documented variables: `%{formName}`, `%{siteName}`, and form field names). If the token is unsupported, every notification email will contain the literal string `%{submissionId}` in its subject. The developer's commit message concedes this cannot be verified end-to-end against the actual recipients on this deployment. Fix: use a documented token or static text — e.g. `value="T&amp;J Cleaning inquiry from %{email}"` or `value="T&amp;J Cleaning inquiry — contact form submission"`.

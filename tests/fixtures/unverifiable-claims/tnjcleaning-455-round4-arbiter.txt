@@ -1,0 +1,6 @@
+VERDICT: FAIL
+
+ISSUE: `%{submissionId}` may not be a supported Netlify Forms subject variable; literal token will appear in email subject if unsupported
+SEVERITY: BLOCKING
+LOCATION: index.html:302
+DETAILS: The previous value ("New cleaning inquiry from tnjcleaning.com") was unambiguously correct. The replacement introduces a token whose substitution behavior is unconfirmed on this deployment. Netlify's documentation lists only `%{formName}`, `%{siteName}`, and form field names as supported subject-line variables; `%{submissionId}` appears in a documentation example but is not enumerated as a predefined variable. The developer's own commit message concedes that end-to-end verification was performed on a different site with different email recipients, making that evidence non-transferable. If the token is unsupported, the literal string `%{submissionId}` appears in every notification email subject. Fix: use `value="T&J Cleaning inquiry from %{email}"` (documented form-field variable) or `value="T&J Cleaning — contact form submission"` (static, always correct).

@@ -1,0 +1,17 @@
+VERDICT: FAIL
+ISSUE: `%{submissionId}` is not a supported Netlify Forms email subject variable; literal text will appear in notification emails
+SEVERITY: BLOCKING
+LOCATION: index.html:302
+DETAILS: Netlify Forms documentation (https://docs.netlify.com/manage/forms/notifications/#customize-the-email-subject-line) explicitly lists supported subject variables as `%{formName}`, `%{siteName}`, and form field names. `%{submissionId}` is not among them. The developer's commit message cites Netlify documentation as supporting `%{submissionId}`, but the quoted passage does not include it in the list of "predefined variables" — it only mentions `%{formName}`, `%{siteName}`, and generic "these variables" without specificity.
+
+Prior reviews (Rounds 1–2) already identified this as BLOCKING. The developer claims live verification on night-owl-studio.com, but that deployment cannot confirm behavior on tnjcleaning.com because:
+1. Email recipients differ between sites (verification path is not portable).
+2. The developer explicitly states in the commit message: "recipients here are mailboxes we do not control, so this cannot be verified end to end the way it was on night-owl-studio."
+
+Without verification against the current, live Netlify Forms API or official documentation, the risk remains that `%{submissionId}` will render literally in the subject line, defeating the stated goal of improving spam filtering signals.
+
+**Fix:** Use only documented tokens (`%{formName}`, `%{siteName}`, or field names like `%{email}`), or remove the placeholder entirely:
+- Option A: `value="T&amp;J Cleaning inquiry from %{email}"`
+- Option B: `value="T&amp;J Cleaning inquiry — contact form submission"`
+
+The current change reintroduces a defect that two prior reviews flagged as unresolved.

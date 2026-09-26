@@ -1292,6 +1292,50 @@ diff_changed_paths() {
   done | sort -u
 }
 
+# Return 1 only when path $1 provably exists nowhere in the repository the
+# hook runs in: not in the worktree, not in HEAD, and no tracked, staged, or
+# untracked (non-ignored) file anywhere has the same basename. Return 0 when
+# it exists or when the answer is unknown (no git, an absolute path, a ".."
+# path, a git error), so every doubt keeps a finding blocking.
+#
+# Resolved against `git rev-parse --show-toplevel`, never the cwd: a
+# cwd-relative git dir is how review logs landed in the wrong repo before.
+# An ignored file with the same basename elsewhere is not found. A reviewer
+# running with --tools "" could not have read it unless it was in the diff,
+# and a path in the diff never reaches this check.
+_path_exists_in_repo() {
+  local _p="$1" _top _files
+  [[ -n "${_p}" && "${_p}" != /* && "${_p}" != *..* ]] || return 0
+  _top=$(git rev-parse --show-toplevel 2>/dev/null) || return 0
+  [[ -n "${_top}" ]] || return 0
+  [[ -e "${_top}/${_p}" ]] && return 0
+  git -C "${_top}" cat-file -e "HEAD:${_p}" 2>/dev/null && return 0
+  _files=$(git -C "${_top}" ls-files --cached --others --exclude-standard 2>/dev/null) || return 0
+  _PHANTOM_BASE="${_p##*/}" awk '
+    { n = $0; sub(/.*\//, "", n) }
+    n == ENVIRON["_PHANTOM_BASE"] { found = 1; exit }
+    END { exit !found }' <<<"${_files}" && return 0
+  return 1
+}
+
+# Return 0 when the finding $1 quotes code that appears in an added line of
+# diff $2: a `backticked` or "double-quoted" span of 6 or more characters.
+# Such a finding is about code the reviewer was shown, whatever its LOCATION
+# says, so it is never treated as fabricated (#488).
+_finding_quotes_diff() {
+  local _added _span
+  local _bt=$'\x60' # a backtick, kept out of single quotes for SC2016
+  _added=$(printf '%s\n' "$2" | grep -E '^\+' | grep -vE '^\+\+\+ ' || true)
+  [[ -n "${_added}" ]] || return 1
+  while IFS= read -r _span; do
+    [[ ${#_span} -ge 6 ]] || continue
+    if [[ "${_added}" == *"${_span}"* ]]; then
+      return 0
+    fi
+  done < <(printf '%s\n' "$1" | grep -oE "${_bt}[^${_bt}]+${_bt}|\"[^\"]+\"" | sed -E "s/^[${_bt}\"]//; s/[${_bt}\"]\$//" || true)
+  return 1
+}
+
 # --- Unverifiable-claim downgrade (claude-config#455, #555, #488) ---
 #
 # Reviewers here run with `--tools ""`: no network, no filesystem. Two kinds
@@ -1316,12 +1360,23 @@ diff_changed_paths() {
 # This function weakens a gate, so every rule below errs toward blocking. A
 # false block costs a human one command; a false pass ships the defect.
 #
-#   - SECURITY EXEMPTION, both kinds (_security_re). A finding that names a
-#     credential, token, auth, logging, injection, or data-loss class is never
-#     downgraded. That keeps #488's literal instance (a leaked token in a file
-#     that never existed) blocking: the arbiter stays its backstop, because a
-#     reviewer must not be able to launder a credential finding into a warning
-#     by misplacing it or by calling it unsupported.
+#   - SECURITY EXEMPTION (_security_re). A finding that names a credential,
+#     token, auth, logging, injection, or data-loss class is never downgraded
+#     by Kind 1 or by the ordinary Kind 2 check: a reviewer must not be able
+#     to launder a credential finding into a warning by misplacing it or by
+#     calling it unsupported. Two narrow refinements (#455, #488 reopened):
+#       * `token` in the template sense ("substitution token", "`%{x}`
+#         token") is not a credential word (_tmpl_token_re). Every other
+#         security word still exempts.
+#       * A security finding whose LOCATION names only PHANTOM files (in
+#         neither the diff, HEAD, the index, nor the worktree, and no file
+#         anywhere with that basename) is downgraded, unless its ISSUE or
+#         LOCATION line names a changed file or it quotes code from the
+#         diff's added lines. Needs the diff as $3; without it, never.
+#     Measured before this change: with the exemption switched off, the
+#     recorded #455 and #488 findings still blocked. Kind 1 did not match
+#     "is not a supported Netlify ... token", and #488's DETAILS mentions the
+#     changed file, which tied it to the diff.
 #   - Kind 1 needs a named third-party platform as the grammatical subject of
 #     the negation ("Netlify Forms does not support ... syntax"). "the new
 #     parser does not support that flag" names nothing external and blocks.
@@ -1341,17 +1396,20 @@ diff_changed_paths() {
 # $1 = reviewer output (VERDICT/ISSUE/SEVERITY/LOCATION/DETAILS blocks)
 # $2 = newline-separated paths the reviewed diff touches (may be empty, which
 #      disables the location check rather than downgrading everything)
+# $3 = the reviewed diff (optional; enables the phantom-file security case)
 #
-# Depends on has_blocking_severity() and log_warn() only.
+# Depends on has_blocking_severity(), log_warn(), _path_exists_in_repo(), and
+# _finding_quotes_diff() only.
 # tests/test_unverifiable_claim_downgrade.bats extracts those with sed.
 downgrade_unverifiable_findings() {
   local _output="$1"
   local _changed="$2"
+  local _diff="${3:-}"
   local -a _out_lines=()
   local -a _block=()
   local -a _toks=()
   local _line _norm _block_text _prose _issue_title _reason _loc _loc_words _tok _path _f _base
-  local _related _uncertain _pathlike _sev_count
+  local _related _related_head _uncertain _pathlike _phantom _security _head _sev_count
   local _result
   local _downgraded="no"
 
@@ -1378,6 +1436,25 @@ downgrade_unverifiable_findings() {
   local _vendor='(netlify|vercel|cloudflare|heroku|github actions|actions expressions?|workflow expressions?|(^|[^a-z])(aws|gcp|azure)|google cloud|docker hub|npm registry|pypi|homebrew|bsd|gnu|macos|busybox)'
   local _claim="${_neg} (support|accept|allow|recogni[sz]e|expand|substitute|interpolate)[^.]{0,60}(syntax|placeholder|variable|substitution|interpolat|templat|flag|option|expression|bracket|construct|keyword|quantifier)|${_neg} (document|have (a |any )?(built-in |native )?[a-z ]{0,30}(substitution|templat|interpolat))|(has|have) no documented"
   local _external_re="${_vendor}[a-z' ]{0,25}(${_claim})"
+  # The same claim with the platform after the negation: "`%{submissionId}`
+  # is not a supported Netlify Forms substitution token", "may not be a
+  # documented Netlify Forms subject variable". Every recorded #455 finding
+  # in the tnjcleaning log (2026-08-31) is worded this way or as "Netlify
+  # Forms does not support this token", and none matched before, security
+  # exemption or not. `token` is a claim noun here only in the template
+  # sense; the credential sense never reaches this check (see _tmpl_token_re).
+  local _external_rev_re="((is|are) ?n.?o?t|not be) (a |an )?(supported|documented|valid|recogni[sz]ed|predefined|known) ${_vendor}[a-z' ]{0,40}(token|variable|placeholder|substitution|syntax|keyword|expression|option|flag)|${_vendor}[a-z' ]{0,25}${_neg} (support|accept|recogni[sz]e|expand|substitute) (this|that|the) (token|variable|placeholder)"
+
+  # `token` in the TEMPLATE sense: a substitution variable such as Netlify's
+  # `%{submissionId}`, not a credential. These phrases are removed before the
+  # security check only, so bare `token` still exempts a finding whenever it
+  # is used in any other way ("GITHUB_TOKEN", "the token grants write
+  # access"). The other credential words (secret, hard-coded, leak, bearer,
+  # api key, log, auth, expose, plain text) are not touched, so a real
+  # credential finding still has to avoid all of them to lose the exemption.
+  # #592 named this as the reason #455's own wording kept blocking.
+  local _bt=$'\x60' # a backtick, kept out of single quotes for SC2016
+  local _tmpl_token_re="(substitution|template|templating|placeholder|subject|interpolation|replacement|predefined|documented|supported|unsupported|literal|variable)[a-z ]{0,20}tokens?|%\\{[a-z0-9_]+\\}${_bt}? tokens?|tokens? \\(?${_bt}?%\\{|(support|recogni[sz]e|expand|substitute)s? (this|that|the) tokens?|tokens? (support|list)|tokens? (is|are) (unsupported|not supported|supported)|a tokens? whose substitution"
 
   # A finding that says the change should have edited a file it did not.
   # Such a file is outside the diff by definition, so its LOCATION proves
@@ -1393,13 +1470,19 @@ downgrade_unverifiable_findings() {
     # Only a plain, line-anchored SEVERITY: BLOCKING is eligible. Anything
     # else (bolded, bulleted, indented) is left alone and still blocks.
     _sev_count=$(printf '%s\n' "${_block_text}" | tr -d '*`_' | grep -ciE 'SEVERITY:' || true)
+    _security=0
+    # Lowercased first, so _tmpl_token_re can be written in lower case and
+    # needs no case-insensitive sed flag.
+    if printf '%s\n' "${_block_text}" | tr '[:upper:]' '[:lower:]' | sed -E "s/${_tmpl_token_re}/tmplvar/g" | grep -qiE "${_security_re}"; then
+      _security=1
+    fi
     if [[ "${_sev_count}" == "1" ]] \
-      && printf '%s\n' "${_block_text}" | grep -qiE '^SEVERITY:[[:space:]]*BLOCKING' \
-      && ! printf '%s\n' "${_block_text}" | grep -qiE "${_security_re}"; then
+      && printf '%s\n' "${_block_text}" | grep -qiE '^SEVERITY:[[:space:]]*BLOCKING'; then
       # Dots inside a token (`%{...}`, a file name) are not sentence ends.
       _prose=$(printf '%s\n' "${_block_text}" | sed -E 's/\.([^[:space:]])/_\1/g')
-      # Kind 1: external-behavior claim.
-      if printf '%s\n' "${_prose}" | grep -qiE "${_external_re}"; then
+      # Kind 1: external-behavior claim. Never for a security finding.
+      if [[ ${_security} -eq 0 ]] \
+        && printf '%s\n' "${_prose}" | grep -qiE "${_external_re}|${_external_rev_re}"; then
         _reason="claim about external tool/service behavior the reviewer cannot check (#455/#555)"
       fi
       # Kind 2: LOCATION names no file in the diff.
@@ -1407,9 +1490,14 @@ downgrade_unverifiable_findings() {
         && ! printf '%s\n' "${_block_text}" | grep -qiE "${_omission_re}"; then
         _loc=$(printf '%s\n' "${_block_text}" | grep -im1 '^LOCATION:' | sed -E 's/^LOCATION:[[:space:]]*//I' || true)
         _loc="${_loc//\\//}"
+        # The finding's own headline: its ISSUE and LOCATION lines only.
+        _head=$(printf '%s\n' "${_block_text}" | tr -d '*`_' | grep -iE '^[^A-Za-z]*(ISSUE|LOCATION):' || true)
+        _head="${_head//\\//}"
         _related=0
+        _related_head=0
         _uncertain=0
         _pathlike=0
+        _phantom=1
         # Any changed path, or its basename, anywhere in the finding ties it
         # to the diff. Whole-string containment, so a name with a space or
         # non-ASCII characters, a #L anchor, or a :line tail cannot defeat it.
@@ -1423,14 +1511,16 @@ downgrade_unverifiable_findings() {
           _base="${_f##*/}"
           if [[ "${_block_text//\\//}" == *"${_f}"* || "${_block_text}" == *"${_base}"* ]]; then
             _related=1
-            break
+          fi
+          if [[ "${_head}" == *"${_f}"* || "${_head}" == *"${_base}"* ]]; then
+            _related_head=1
           fi
         done <<<"${_changed}"
         # A glob or brace pattern could name a changed file.
         if [[ "${_loc}" == *[\*\?\[\{]* ]]; then
           _uncertain=1
         fi
-        if [[ ${_related} -eq 0 && ${_uncertain} -eq 0 ]]; then
+        if [[ ${_uncertain} -eq 0 ]]; then
           # Split on whitespace, commas, "+", and strip quoting. read -a, not
           # an unquoted $(...), so a LOCATION token can never glob.
           _loc_words=$(printf '%s\n' "${_loc}" | sed -E 's/[`"(),+;]/ /g') || _loc_words=""
@@ -1450,11 +1540,31 @@ downgrade_unverifiable_findings() {
             # are not.
             if [[ "${_path##*/}" =~ [^.]\.[A-Za-z0-9_-]+$ ]]; then
               _pathlike=1
+              # One file-shaped path that exists anywhere ends the phantom
+              # case. Only asked for security findings: it runs git.
+              if [[ ${_security} -eq 1 && ${_phantom} -eq 1 ]] && _path_exists_in_repo "${_path}"; then
+                _phantom=0
+              fi
             fi
           done
         fi
-        if [[ ${_pathlike} -eq 1 && ${_related} -eq 0 && ${_uncertain} -eq 0 ]]; then
+        if [[ ${_security} -eq 0 && ${_pathlike} -eq 1 && ${_related} -eq 0 && ${_uncertain} -eq 0 ]]; then
           _reason="LOCATION names no file in the reviewed diff (#488): ${_loc}"
+        fi
+        # Security finding against a PHANTOM file (#488's literal case). The
+        # security exemption exists so a real credential defect cannot be
+        # laundered into a warning by misplacing it. A file that is in
+        # neither the diff, HEAD, the index, nor the worktree, and whose name
+        # matches no file anywhere in the repo, holds no credential and was
+        # never shown to a reviewer running with --tools "". Guards against a
+        # misattributed real finding: the ISSUE and LOCATION lines must name
+        # no changed file, and no code span the finding quotes may appear in
+        # the diff's added lines. DETAILS may mention a changed file: #488's
+        # own finding says "This diff only modifies example.sh.disabled".
+        if [[ -z "${_reason}" && ${_security} -eq 1 && ${_pathlike} -eq 1 && ${_phantom} -eq 1 \
+          && ${_related_head} -eq 0 && ${_uncertain} -eq 0 && -n "${_diff}" ]] \
+          && ! _finding_quotes_diff "${_block_text}" "${_diff}"; then
+          _reason="security finding against a file that exists nowhere in the repo or the diff (#488): ${_loc}"
         fi
       fi
     fi
@@ -2761,7 +2871,7 @@ ${DIFF}
 
   # Before parse_verdict, as on the commit path: a BLOCKING finding the
   # reviewer could not have verified does not block the push (#455/#555/#488).
-  FULL_DIFF_OUTPUT=$(downgrade_unverifiable_findings "${FULL_DIFF_OUTPUT}" "${REVIEWED_PATHS}")
+  FULL_DIFF_OUTPUT=$(downgrade_unverifiable_findings "${FULL_DIFF_OUTPUT}" "${REVIEWED_PATHS}" "${DIFF}")
 
   # FULL_DIFF_OUTPUT keeps the structured sentinel for the gate below;
   # the displayed and logged copy has it stripped.
@@ -3268,9 +3378,9 @@ fi
 # Unverifiable-claim downgrade (#455/#555/#488): same placement and contract.
 # Runs before arbitration, so an external-behavior claim never reaches an
 # arbiter that has no more ability to check it than the reviewer did.
-CODE_REVIEWER_OUTPUT=$(downgrade_unverifiable_findings "${CODE_REVIEWER_OUTPUT}" "${REVIEWED_PATHS}")
+CODE_REVIEWER_OUTPUT=$(downgrade_unverifiable_findings "${CODE_REVIEWER_OUTPUT}" "${REVIEWED_PATHS}" "${DIFF}")
 if [[ "${ADVERSARIAL_AVAILABLE}" == true ]]; then
-  ADVERSARIAL_OUTPUT=$(downgrade_unverifiable_findings "${ADVERSARIAL_OUTPUT}" "${REVIEWED_PATHS}")
+  ADVERSARIAL_OUTPUT=$(downgrade_unverifiable_findings "${ADVERSARIAL_OUTPUT}" "${REVIEWED_PATHS}" "${DIFF}")
 fi
 
 # The *_OUTPUT vars carry the structured-decision sentinel (claude-config#443)

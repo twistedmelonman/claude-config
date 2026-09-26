@@ -1,0 +1,5 @@
+VERDICT: FAIL
+ISSUE: Subject line uses `%{submissionId}` placeholder; Netlify Forms does not support this token
+SEVERITY: BLOCKING
+LOCATION: index.html:302
+DETAILS: Netlify Forms email notifications support only documented substitution tokens: `%{name}`, `%{email}`, `%{phone}`, `%{message}`, and form field names. `%{submissionId}` is not a supported variable. The literal string `%{submissionId}` will appear in every email subject line instead of a unique ID, defeating the goal of creating a distinctive, filterable subject line. Fix: Either use a supported token like `%{email}`, or remove the placeholder and use a static subject like `"T&amp;J Cleaning inquiry from tnjcleaning.com"` (verify token support against current Netlify documentation if uncertain).

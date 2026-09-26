@@ -1,0 +1,18 @@
+VERDICT: FAIL
+ISSUE: `%{submissionId}` is not a supported Netlify Forms email subject variable; literal text will appear in notification emails
+SEVERITY: BLOCKING
+LOCATION: index.html:302
+DETAILS: The developer cites Netlify documentation (https://docs.netlify.com/manage/forms/notifications/#customize-the-email-subject-line) as supporting `%{submissionId}`. However, the quoted passage lists only three supported predefined variables: `%{formName}`, `%{siteName}`, and form field names (like `%{email}`). The `%{submissionId}` token is mentioned in an *example* ("New lead from %{formName} (%{submissionId})") but is NOT listed among the "predefined variables" that can be applied.
+
+Prior reviews (Rounds 1–2) already identified this as a defect because:
+1. Netlify documentation does not guarantee `%{submissionId}` substitution.
+2. The developer's own claim ("verified live against a deploy preview") came from a different site (night-owl-studio.com) with different email recipients, making it non-transferable to tnjcleaning.com.
+3. The commit message explicitly states: "recipients here are mailboxes we do not control, so this cannot be verified end to end the way it was on night-owl-studio."
+
+Without verification on the target site or explicit confirmation from Netlify that `%{submissionId}` is a supported subject variable, the risk remains that the literal string `%{submissionId}` will appear in the email subject line, defeating the stated goal of improving spam filtering signals.
+
+**Fix:** Use only documented variables or remove the placeholder:
+- Option A (documented variable): `value="T&amp;J Cleaning inquiry from %{email}"`
+- Option B (static): `value="T&amp;J Cleaning inquiry — contact form submission"`
+
+The burden of proof is on the submitter to verify against current Netlify API behavior *on this site*, not on a different deployment.
