@@ -49,14 +49,16 @@ _load() {
   # set -u if unset. Shellcheck flags it unused because only sourced code reads
   # it; export keeps both satisfied.
   export PENDING="${GATE_DIR}/pending"
-  # The TTL constant sits above _die(), outside the sed range. Take the real
-  # line rather than a copy, so the default under test is the shipped one.
-  local ttl_line
-  ttl_line="$(grep -m1 '^APPROVAL_TTL=' "${GATE}")" || {
-    echo "no APPROVAL_TTL line in ${GATE}" >&2
-    exit 1
-  }
-  eval "${ttl_line}"
+  # The TTL constants sit above _die(), outside the sed range. Take the real
+  # lines rather than copies, so the defaults under test are the shipped ones.
+  local ttl_line var
+  for var in APPROVAL_TTL BUFFER_TTL; do
+    ttl_line="$(grep -m1 "^${var}=" "${GATE}")" || {
+      echo "no ${var} line in ${GATE}" >&2
+      exit 1
+    }
+    eval "${ttl_line}"
+  done
 }
 
 _batch() {
@@ -601,16 +603,25 @@ else
   _no "no shared batch.txt is written"
 fi
 
-# ABORT still wipes every approval, and its batch file goes too.
-printf 'keep?\n' >"${APPROVED}/earlier"
+# ABORT revokes only the aborted batch's own items (claude-config#613). It
+# used to wipe all of approved/, so aborting a commit-message batch silently
+# revoked a PR body approved earlier, in this session or another.
+printf 'approved earlier, not in this batch\n' >"${APPROVED}/earlier"
+printf 'an older approval of this batch item\n' >"${APPROVED}/item"
 STUB_STATUS=ABORT
 rc5=0
 P5="$(_open_from "${TMP}/repos/alpha")" || rc5=$?
-if [[ "${rc5}" != 0 ]] && ! compgen -G "${APPROVED}/*" >/dev/null; then
-  _ok "ABORT approves nothing and wipes approved/"
+if [[ "${rc5}" != 0 && ! -e "${APPROVED}/item" ]]; then
+  _ok "ABORT approves nothing and revokes the aborted item's approval"
 else
-  _no "ABORT approves nothing and wipes approved/"
+  _no "ABORT approves nothing and revokes the aborted item's approval (rc ${rc5})"
 fi
+if [[ -f "${APPROVED}/earlier" ]]; then
+  _ok "ABORT leaves an approval outside the batch standing"
+else
+  _no "ABORT leaves an approval outside the batch standing"
+fi
+rm -f "${APPROVED:?}"/*
 if [[ -n "${P5}" && -e "${P5}" ]]; then
   _ok "an aborted batch's file is kept"
 else
@@ -808,26 +819,39 @@ else
   _no "edits: after a PENDING timeout the next open shows and approves the edited text"
 fi
 
-# (c) An edit, an unrecognized word, then the process is killed.
-_reset_alpha
-: >"${OPENED_LOG}"
-printf 'fix(x): staged from %s\n' "${TMP}/repos/alpha" >"${PENDING}/item"
-# Prefix assignments, not exports: the stub reads them from the environment,
-# and nothing leaks into the rest of this file.
-(cd "${TMP}/repos/alpha" && STUB_STATUS=XYZZY STUB_EDIT=EDIT-KILLED POLL_TIMEOUT=60 \
-  PATH="${STUB_PATH}" _cmd_open) >"${OUT}" 2>&1 &
-killpid=$!
-sleep 3
-kill -TERM "${killpid}" 2>/dev/null || true
-rck=0
-wait "${killpid}" || rck=$?
-PC="$(cat "${OPENED_LOG}")"
-if [[ "${rck}" != 0 && -n "${PC}" && -f "${PC}" ]] && grep -q 'EDIT-KILLED from' "${PC}" &&
-  grep -q "kept at ${PC}" "${OUT}"; then
-  _ok "edits: a killed open keeps the edited buffer and says where"
-else
-  _no "edits: a killed open keeps the edited buffer and says where (rc ${rck})"
-fi
+# (c) An edit, an unrecognized word, then the process is killed. Each signal
+# exits 128 + its number (claude-config#615): all three used to exit 130, so a
+# supervisor that sent TERM read the kill as a Ctrl-C. The rc alone cannot
+# show the trap ran, since an untrapped death gives the same code; the
+# "kept at" note is what proves it did.
+for row in TERM:143 HUP:129 INT:130; do
+  sig="${row%:*}"
+  want_rc="${row#*:}"
+  _reset_alpha
+  : >"${OPENED_LOG}"
+  printf 'fix(x): staged from %s\n' "${TMP}/repos/alpha" >"${PENDING}/item"
+  # Prefix assignments, not exports: the stub reads them from the environment,
+  # and nothing leaks into the rest of this file.
+  (cd "${TMP}/repos/alpha" && STUB_STATUS=XYZZY STUB_EDIT=EDIT-KILLED POLL_TIMEOUT=60 \
+    PATH="${STUB_PATH}" _cmd_open) >"${OUT}" 2>&1 &
+  killpid=$!
+  sleep 3
+  kill -"${sig}" "${killpid}" 2>/dev/null || true
+  rck=0
+  wait "${killpid}" || rck=$?
+  PC="$(cat "${OPENED_LOG}")"
+  if [[ -n "${PC}" && -f "${PC}" ]] && grep -q 'EDIT-KILLED from' "${PC}" &&
+    grep -q "kept at ${PC}" "${OUT}"; then
+    _ok "edits: an open killed by ${sig} keeps the edited buffer and says where"
+  else
+    _no "edits: an open killed by ${sig} keeps the edited buffer and says where"
+  fi
+  if [[ "${rck}" == "${want_rc}" ]]; then
+    _ok "edits: an open killed by ${sig} exits ${want_rc}"
+  else
+    _no "edits: an open killed by ${sig} exits ${want_rc} (got ${rck})"
+  fi
+done
 STUB_STATUS=APPROVED
 _open_from "${TMP}/repos/alpha" >/dev/null || true
 if grep -q 'EDIT-KILLED from' "${SHOWN}" && grep -q 'EDIT-KILLED from' "${APPROVED}/item" 2>/dev/null; then
@@ -891,6 +915,50 @@ if [[ -f "${APPROVED}/item" && -n "${PE}" && ! -e "${PE}" && "${got_hash}" == "$
 else
   _no "edits: a plain APPROVED open approves the staged bytes and removes its buffer"
 fi
+
+# --- stale buffers are removed (claude-config#614) --------------------------
+
+# A buffer is carried only by an open with exactly its item set, so one whose
+# set changed, or whose branch is gone, used to stay in batches/ for good, and
+# every later open on its key re-reported it. open now removes buffers older
+# than BUFFER_TTL, on any key, and names each one.
+_reset_alpha
+STALE="${GATE_REVIEW_DIR}/batches/alpha-main-111-111.txt"
+GONE="${GATE_REVIEW_DIR}/batches/deleted-branch-222-222.txt"
+YOUNG="${GATE_REVIEW_DIR}/batches/alpha-main-333-333.txt"
+printf '# STATUS: ABORT\n# BATCH: 111-111\n\n=== other ===\nold text\n' >"${STALE}"
+printf '# STATUS: ABORT\n# BATCH: 222-222\n\n=== item ===\nold text\n' >"${GONE}"
+printf '# STATUS: ABORT\n# BATCH: 333-333\n\n=== other ===\nnew text\n' >"${YOUNG}"
+_age_minutes "${STALE}" 1500
+_age_minutes "${GONE}" 1500
+PF="$(_open_from "${TMP}/repos/alpha")" || true
+if [[ ! -e "${STALE}" && ! -e "${GONE}" ]]; then
+  _ok "stale: open removes buffers older than BUFFER_TTL, on any key"
+else
+  _no "stale: open removes buffers older than BUFFER_TTL, on any key"
+fi
+if grep -q "removed stale buffer.*${STALE##*/}" "${OUT}" &&
+  grep -q "removed stale buffer.*${GONE##*/}" "${OUT}"; then
+  _ok "stale: each removed buffer is named"
+else
+  _no "stale: each removed buffer is named"
+fi
+if ! grep -q "not carried.*${STALE##*/}" "${OUT}"; then
+  _ok "stale: a removed buffer is not also reported as kept"
+else
+  _no "stale: a removed buffer is not also reported as kept"
+fi
+if [[ -f "${YOUNG}" ]] && grep -q "not carried.*${YOUNG##*/}" "${OUT}"; then
+  _ok "stale: a young buffer with other items is kept and reported"
+else
+  _no "stale: a young buffer with other items is kept and reported"
+fi
+if [[ -f "${GATE_REVIEW_DIR}/batches/other-main-1-1.txt" && -n "${PF}" && ! -e "${PF}" ]]; then
+  _ok "stale: young buffers on other keys are left alone"
+else
+  _no "stale: young buffers on other keys are left alone"
+fi
+rm -f "${YOUNG}"
 unset OPEN_OUT
 
 echo "--- ${pass} passed, ${fail} failed"
