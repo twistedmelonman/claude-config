@@ -235,6 +235,19 @@ _ensure_symlink() {
 REPAIR_COUNT=0
 MISSING_COUNT=0
 PRUNE_COUNT=0
+WRONG_TARGET_COUNT=0
+NOEXEC_COUNT=0
+
+# A deployed hook that is absent, dangling or not executable is SKIPPED, not
+# failed: hook-block-all.sh runs each sub-hook only `if [[ -x "${hook}" ]]`.
+# These are the tracked paths that guard applies to (the dispatcher's
+# sub-hooks live in scripts/, the git/review hooks in hooks/).
+_is_hook_path() {
+  case "$1" in
+    hooks/*.sh | scripts/hook-*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
 repair_symlinks() {
   local repair_count=0
@@ -259,6 +272,55 @@ repair_symlinks() {
         ((MISSING_COUNT += 1))
       fi
       continue
+    fi
+
+    # A dangling link at a TRACKED path whose target is outside REPO_DIR: an
+    # old clone location, a deleted worktree, another spelling of the repo
+    # path. prune_stale_symlinks skips it (its prefix test only owns links
+    # into REPO_DIR), so before #439 --repair saw a link, not a regular file,
+    # and called it healthy while the hook it stood for was skipped. The old
+    # target is gone, so relinking loses nothing.
+    local current=""
+    if [[ -L "${link}" ]]; then
+      current="$(readlink "${link}")" || current=""
+    fi
+
+    if [[ -L "${link}" && ! -e "${link}" ]]; then
+      if [[ "${DRY_RUN}" == true ]]; then
+        _dry "Would relink dangling symlink: ${link} -> ${target} (was ${current})"
+        would_install+=("repair:${link}")
+        ((repair_count += 1))
+        continue
+      fi
+      _warn "Dangling symlink: ${link} -> ${current}, relinking"
+      rm "${link}"
+      ln -s "${target}" "${link}"
+      _ok "Repaired: ${link} -> ${target}"
+      ((repair_count += 1))
+      current="${target}"
+    fi
+
+    # A link that resolves, but not to this repo's copy (compared as the same
+    # string _ensure_symlink compares). It works, so --repair, which runs
+    # unattended from update-tools.sh, does not replace it: it could be a
+    # deliberate local override. It is still not "healthy"; --sync replaces
+    # it, as _ensure_symlink always has.
+    if [[ -L "${link}" && "${current}" != "${target}" ]]; then
+      if ${REPAIR_ONLY}; then
+        _warn "Symlink points somewhere other than this repo: ${link} -> ${current} (run install.sh --sync to relink)"
+        ((WRONG_TARGET_COUNT += 1))
+      fi
+    fi
+
+    # A hook whose deployed path resolves but is not executable is skipped by
+    # hook-block-all.sh without a word. Report it; do not chmod here, because
+    # the mode is tracked in git and the fix belongs in the repo. --repair
+    # only: --sync reports it later, from the smoke test (hooks/*.sh) and the
+    # symlink health check (scripts/hook-*), which also make --sync fail.
+    if ${REPAIR_ONLY} && _is_hook_path "${file}" &&
+      [[ -e "${link}" && ! -d "${link}" && ! -x "${link}" ]]; then
+      _warn "Hook not executable, so it never runs: ${link}"
+      ((NOEXEC_COUNT += 1))
     fi
 
     # Only repair files that exist as regular files where symlinks should be
@@ -354,8 +416,19 @@ if ${REPAIR_ONLY}; then
   # warning to act on, not a reason to abort the nightly update.
   if [[ ${#failures[@]} -gt 0 ]]; then
     _warn "NOT healthy: ${#failures[@]} step(s) failed (see errors above)"
-  elif [[ "${MISSING_COUNT}" -gt 0 ]]; then
-    _warn "NOT healthy: ${MISSING_COUNT} tracked file(s) have no symlink. --repair does not create links; run install.sh --sync"
+  elif [[ "${MISSING_COUNT}" -gt 0 || "${WRONG_TARGET_COUNT}" -gt 0 || "${NOEXEC_COUNT}" -gt 0 ]]; then
+    if [[ "${MISSING_COUNT}" -gt 0 ]]; then
+      _warn "NOT healthy: ${MISSING_COUNT} tracked file(s) have no symlink. --repair does not create links; run install.sh --sync"
+    fi
+    if [[ "${WRONG_TARGET_COUNT}" -gt 0 ]]; then
+      _warn "NOT healthy: ${WRONG_TARGET_COUNT} symlink(s) point somewhere other than this repo; run install.sh --sync"
+    fi
+    if [[ "${NOEXEC_COUNT}" -gt 0 ]]; then
+      _warn "NOT healthy: ${NOEXEC_COUNT} hook(s) not executable, so hook-block-all.sh skips them; chmod +x in the repo and commit"
+    fi
+    if [[ "${REPAIR_COUNT}" -gt 0 || "${PRUNE_COUNT}" -gt 0 ]]; then
+      _info "Also fixed: ${REPAIR_COUNT} repaired, ${PRUNE_COUNT} stale link(s) pruned"
+    fi
   elif [[ "${REPAIR_COUNT}" -eq 0 && "${PRUNE_COUNT}" -eq 0 ]]; then
     _ok "All symlinks healthy — nothing to repair"
   elif [[ "${DRY_RUN}" == true ]]; then
@@ -633,6 +706,13 @@ else
       if [[ ! -e "${link}" ]]; then
         _warn "Broken symlink: ${link}"
         failures+=("broken-symlink:${link}")
+        ((symlink_errors += 1))
+      elif [[ "${file}" == scripts/hook-* && ! -x "${link}" ]]; then
+        # hook-block-all.sh skips a sub-hook that is not executable (#439).
+        # The smoke test above covers hooks/*.sh; this covers the dispatcher's
+        # sub-hooks in scripts/.
+        _warn "Hook not executable, so it never runs: ${link}"
+        failures+=("not-executable:${file}")
         ((symlink_errors += 1))
       fi
     elif [[ -e "${link}" ]]; then

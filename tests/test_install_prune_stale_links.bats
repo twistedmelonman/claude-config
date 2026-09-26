@@ -161,3 +161,97 @@ run_install() {
   [[ "${output}" == *"All symlinks healthy"* ]]
   [[ "${output}" != *"Missing symlink"* ]]
 }
+
+# --- #439: --repair must not call a disabled guard "healthy" -----------------
+#
+# hook-block-all.sh runs each sub-hook only `if [[ -x "${hook}" ]]`, so a hook
+# whose deployed path is dangling or not executable is skipped without a word.
+# Two such states still got "All symlinks healthy" after #600:
+#   - a dangling link at a tracked path whose target is outside REPO_DIR (an
+#     old clone path); prune_stale_symlinks does not own it and repair_symlinks
+#     only looked for regular files;
+#   - a link that resolves to a hook that is not executable.
+
+add_tracked_guard() {
+  mkdir -p "${FAKE_REPO}/scripts"
+  printf '#!/usr/bin/env bash\nexit 0\n' >"${FAKE_REPO}/scripts/hook-block-test.sh"
+  chmod +x "${FAKE_REPO}/scripts/hook-block-test.sh"
+  git -C "${FAKE_REPO}" add scripts/hook-block-test.sh
+  GIT_CONFIG_GLOBAL=/dev/null git -C "${FAKE_REPO}" commit -q -m "add guard"
+}
+
+@test "#439: repair relinks a tracked guard whose link dangles outside the repo" {
+  add_tracked_guard
+  run run_install --sync
+  [ "${status}" -eq 0 ]
+  ln -sfn "${TMPDIR_TEST}/old-clone/scripts/hook-block-test.sh" "${DEPLOY}/scripts/hook-block-test.sh"
+  [[ ! -x "${DEPLOY}/scripts/hook-block-test.sh" ]]
+
+  run run_install --repair
+  [ "${status}" -eq 0 ]
+  [[ "${output}" != *"All symlinks healthy"* ]]
+  [[ "${output}" == *"Dangling symlink: ${DEPLOY}/scripts/hook-block-test.sh"* ]]
+  [[ "$(readlink "${DEPLOY}/scripts/hook-block-test.sh")" == "${FAKE_REPO}/scripts/hook-block-test.sh" ]]
+  [[ -x "${DEPLOY}/scripts/hook-block-test.sh" ]]
+}
+
+@test "#439: repair dry run reports a dangling guard link but does not relink it" {
+  add_tracked_guard
+  run run_install --sync
+  [ "${status}" -eq 0 ]
+  ln -sfn "${TMPDIR_TEST}/old-clone/scripts/hook-block-test.sh" "${DEPLOY}/scripts/hook-block-test.sh"
+
+  run run_install --repair --dry-run
+  [ "${status}" -eq 0 ]
+  [[ "${output}" != *"All symlinks healthy"* ]]
+  [[ "${output}" == *"Would relink dangling symlink: ${DEPLOY}/scripts/hook-block-test.sh"* ]]
+  [[ "$(readlink "${DEPLOY}/scripts/hook-block-test.sh")" == "${TMPDIR_TEST}/old-clone/scripts/hook-block-test.sh" ]]
+}
+
+@test "#439: repair says NOT healthy when a guard is not executable" {
+  add_tracked_guard
+  run run_install --sync
+  [ "${status}" -eq 0 ]
+  chmod -x "${FAKE_REPO}/scripts/hook-block-test.sh"
+
+  run run_install --repair
+  [ "${status}" -eq 0 ]
+  [[ "${output}" != *"All symlinks healthy"* ]]
+  [[ "${output}" == *"Hook not executable, so it never runs: ${DEPLOY}/scripts/hook-block-test.sh"* ]]
+  [[ "${output}" == *"NOT healthy: 1 hook(s) not executable"* ]]
+  # --repair does not chmod: the mode is tracked in git.
+  [[ ! -x "${FAKE_REPO}/scripts/hook-block-test.sh" ]]
+}
+
+@test "#439: sync exits non-zero when a scripts/ guard is not executable" {
+  add_tracked_guard
+  chmod -x "${FAKE_REPO}/scripts/hook-block-test.sh"
+
+  run run_install --sync
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"not-executable:scripts/hook-block-test.sh"* ]]
+}
+
+@test "#439: repair says NOT healthy for a link that resolves outside the repo, and leaves it" {
+  run run_install --sync
+  [ "${status}" -eq 0 ]
+  mkdir -p "${TMPDIR_TEST}/override"
+  printf '# override\n' >"${TMPDIR_TEST}/override/CLAUDE.md"
+  ln -sfn "${TMPDIR_TEST}/override/CLAUDE.md" "${DEPLOY}/CLAUDE.md"
+
+  run run_install --repair
+  [ "${status}" -eq 0 ]
+  [[ "${output}" != *"All symlinks healthy"* ]]
+  [[ "${output}" == *"Symlink points somewhere other than this repo: ${DEPLOY}/CLAUDE.md"* ]]
+  [[ "$(readlink "${DEPLOY}/CLAUDE.md")" == "${TMPDIR_TEST}/override/CLAUDE.md" ]]
+}
+
+@test "#439: repair still says healthy with an executable guard linked correctly" {
+  add_tracked_guard
+  run run_install --sync
+  [ "${status}" -eq 0 ]
+
+  run run_install --repair
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *"All symlinks healthy"* ]]
+}
