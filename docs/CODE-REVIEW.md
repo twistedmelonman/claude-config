@@ -239,7 +239,9 @@ costs one command. A false pass ships the defect.
   backslash paths, and names with spaces or non-ASCII characters. It also
   never fires when the finding says the change should have edited a file,
   for example "settings.json has no entry for the new hook", because such a
-  file is outside the diff by definition. The script reads the diff headers
+  file is outside the diff by definition. A sentence that only says the file
+  is outside the diff ("this file is not included in the current diff") is
+  not read as a missed edit. The script reads the diff headers
   with any prefix style and decodes git's quoted paths.
 - **Block boundaries.** A finding starts at any `ISSUE:` line, also after a
   number, a bullet, or markdown emphasis. A block with two `SEVERITY:` lines

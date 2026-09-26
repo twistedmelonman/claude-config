@@ -1,0 +1,10 @@
+VERDICT: FAIL
+ISSUE: Hardcoded GitHub API token committed in script
+SEVERITY: BLOCKING
+LOCATION: tally.sh:3
+DETAILS: Line 3 assigns a literal ghp_ token to GITHUB_TOKEN. Remove it and revoke the token on GitHub.
+ISSUE: Unsafe rm with eval
+SEVERITY: BLOCKING
+LOCATION: tally.sh:5
+DETAILS: eval "rm -rf $target" expands untrusted input. Use rm -rf -- "$target".
+

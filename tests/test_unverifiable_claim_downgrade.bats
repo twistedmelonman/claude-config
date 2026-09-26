@@ -504,6 +504,36 @@ _phantom_run() {
   [ "$(parse_verdict "${out}")" = "PASS" ]
 }
 
+# Live code-reviewer output (Haiku, 2026-09-25) from origin/main at f662d57,
+# run on claude-wrapper#119's change with tally.sh findings seeded as prior-
+# round feedback. Three of nine runs re-flagged them as BLOCKING; these are
+# those three, verbatim. Run 3 says "This file is not included in the
+# current diff", which the omission guard read as a missed edit.
+@test "#488 live: re-flagged prior-round findings against a phantom file are downgraded" {
+  _phantom_repo
+  local f out n=0
+  for f in "${FIX}"/issue-488-live-run*.txt; do
+    n=$((n + 1))
+    out=$(_phantom_run "$(cat "${f}")")
+    [[ "${out}" != *"SEVERITY: BLOCKING"* ]] || {
+      echo "still blocking: ${f}"
+      return 1
+    }
+    [ "$(parse_verdict "${out}")" = "PASS" ]
+  done
+  [ "${n}" -eq 3 ]
+}
+
+@test "outside-diff wording does not hide a real missed edit" {
+  local out
+  out=$(downgrade_unverifiable_findings "VERDICT: FAIL
+ISSUE: The new hook is never registered
+SEVERITY: BLOCKING
+LOCATION: settings.json
+DETAILS: settings.json is not included in this diff, and it must register the new hook or it never runs." "hooks/new-hook.sh")
+  [[ "${out}" == *"SEVERITY: BLOCKING"* ]]
+}
+
 @test "#488 phantom: the file tracked in HEAD keeps it blocking" {
   _phantom_repo
   printf 'TOKEN=x\n' >"${PHANTOM_REPO}/tally.sh"

@@ -1459,6 +1459,11 @@ downgrade_unverifiable_findings() {
   # A finding that says the change should have edited a file it did not.
   # Such a file is outside the diff by definition, so its LOCATION proves
   # nothing about fabrication.
+  # A reviewer saying the file it cites is outside the diff ("this file is
+  # not included in the current diff") is describing the diff, not a missed
+  # edit. Removed before the omission check. Measured: a live #488
+  # reproduction worded it this way, and "not included" kept it blocking.
+  local _outside_diff_re='(is|are) not (included|touched|changed|modified) (in|by) (the|this) (current |staged )?(diff|change|commit)|not (part of|in) (the|this) (current |staged )?(diff|change|commit)'
   local _omission_re='should (also )?(have )?(be(en)? )?(update|edit|change|add|regist|includ|modif|mention|document)|(also|must|needs?( to)?|has to|have to) (be )?(update|edit|change|add|regist|includ|modif)|not (been )?(updated|registered|added|wired|edited|changed|included|referenced|invoked|called|sourced|imported)|never (updated|registered|added|invoked|called|runs|run|referenced|sourced|imported)|no (entry|reference|registration|mention)|nothing (invokes|calls|references|registers|sources|imports)|missing|forgot|omit|out of (sync|date)|stale|unregistered|orphan'
 
   _flush_block() {
@@ -1487,7 +1492,7 @@ downgrade_unverifiable_findings() {
       fi
       # Kind 2: LOCATION names no file in the diff.
       if [[ -z "${_reason}" && -n "${_changed//[[:space:]]/}" ]] \
-        && ! printf '%s\n' "${_block_text}" | grep -qiE "${_omission_re}"; then
+        && ! printf '%s\n' "${_block_text}" | tr '[:upper:]' '[:lower:]' | sed -E "s/${_outside_diff_re}/outside-diff/g" | grep -qiE "${_omission_re}"; then
         _loc=$(printf '%s\n' "${_block_text}" | grep -im1 '^LOCATION:' | sed -E 's/^LOCATION:[[:space:]]*//I' || true)
         _loc="${_loc//\\//}"
         # The finding's own headline: its ISSUE and LOCATION lines only.
